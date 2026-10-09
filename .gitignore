@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing / Coverage
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+
+# uv – committed for applications (overrides global ignore)
+!uv.lock
+
+# Scan test data and RAW files — never commit
+testdata/
+*.[Aa][Rr][Ww]
+*.[Rr][Aa][Ff]
+*.[Nn][Ee][Ff]
+*.[Cc][Rr][23]
+*.[Oo][Rr][Ff]
+*.[Rr][Ww]2
+*.[Dd][Nn][Gg]
+
+# Isolated dev app folder (RFNEGCONV_HOME=.devhome)
+.devhome/

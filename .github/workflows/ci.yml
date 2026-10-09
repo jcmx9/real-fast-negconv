@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  lint-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      # The published tree has no tests/ (they are maintained privately);
+      # the checks then cover src/ only. The private sandbox has both.
+      - name: Lint (ruff check)
+        run: uv run ruff check ${{ hashFiles('tests/**') != '' && 'src/ tests/' || 'src/' }}
+
+      - name: Format check
+        run: uv run ruff format --check ${{ hashFiles('tests/**') != '' && 'src/ tests/' || 'src/' }}
+
+      - name: Type check
+        if: runner.os == 'Linux'
+        run: uv run mypy src/
+
+      - name: Tests with coverage
+        if: hashFiles('tests/**') != ''
+        run: uv run pytest --cov-report=xml
+
+  installer:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint install.sh (shellcheck)
+        if: runner.os == 'Linux'
+        run: |
+          shellcheck -s sh install.sh
+          if [ -f scripts/test_installer.sh ]; then shellcheck -s sh scripts/test_installer.sh; fi
+
+      - name: Lint install.ps1 (PSScriptAnalyzer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+          $scripts = @('install.ps1')
+          if (Test-Path -LiteralPath 'scripts/test_installer.ps1') { $scripts += 'scripts/test_installer.ps1' }
+          $issues = $scripts | ForEach-Object {
+            Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error
+          }
+          $issues | Format-Table -AutoSize -Wrap ScriptName, Line, RuleName, Message
+          if ($issues) { exit 1 }
+
+      - name: Install, update, uninstall (macOS, Linux)
+        if: runner.os != 'Windows' && hashFiles('scripts/test_installer.sh') != ''
+        run: sh scripts/test_installer.sh "$RUNNER_TEMP/home"
+
+      # Published tree: minimal smoke test in a throw-away HOME, no service.
+      - name: Install smoke test (macOS, Linux)
+        if: runner.os != 'Windows' && hashFiles('scripts/test_installer.sh') == ''
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/smoke-home"
+          mkdir -p "$home/Desktop"
+          export HOME="$home" RFNEGCONV_SOURCE="$GITHUB_WORKSPACE" RFNEGCONV_NO_SERVICE=1
+          unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_BIN_HOME RFNEGCONV_HOME
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/real_fast_negconv/__init__.py)"
+          sh install.sh
+          "$HOME/.local/bin/rfnegconv" --version | grep -q "rfnegconv $version"
+          for name in Negative Fotos Archiv; do
+            test -d "$HOME/Pictures/rfnegconv/$name"
+          done
+          sh install.sh --uninstall
+          test ! -e "$HOME/.local/bin/rfnegconv"
+          for name in Negative Fotos Archiv; do
+            test -d "$HOME/Pictures/rfnegconv/$name"
+          done
+
+      # A complete throw-away profile: the known folders (AppData\Local, ...)
+      # resolve via %USERPROFILE%, and the environment variables must agree.
+      - name: Prepare temporary USERPROFILE (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($dir in 'AppData\Local', 'AppData\Roaming', 'Pictures', 'Desktop') {
+            New-Item -ItemType Directory -Force -Path (Join-Path "$env:RUNNER_TEMP\profile" $dir) | Out-Null
+          }
+
+      - name: Install, update, uninstall (Windows PowerShell 5.1)
+        if: runner.os == 'Windows' && hashFiles('scripts/test_installer.ps1') != ''
+        shell: powershell
+        env:
+          USERPROFILE: ${{ runner.temp }}\profile
+          LOCALAPPDATA: ${{ runner.temp }}\profile\AppData\Local
+          APPDATA: ${{ runner.temp }}\profile\AppData\Roaming
+        run: .\scripts\test_installer.ps1 -TempRoot "$env:RUNNER_TEMP\installer"
+
+      # Published tree: minimal smoke test in the throw-away profile, no service.
+      - name: Install smoke test (Windows PowerShell 5.1)
+        if: runner.os == 'Windows' && hashFiles('scripts/test_installer.ps1') == ''
+        shell: powershell
+        env:
+          USERPROFILE: ${{ runner.temp }}\profile
+          LOCALAPPDATA: ${{ runner.temp }}\profile\AppData\Local
+          APPDATA: ${{ runner.temp }}\profile\AppData\Roaming
+          RFNEGCONV_SOURCE: ${{ github.workspace }}
+          RFNEGCONV_NO_SERVICE: '1'
+          RFNEGCONV_PICTURES_DIR: ${{ runner.temp }}\profile\Pictures
+          RFNEGCONV_DESKTOP_DIR: ${{ runner.temp }}\profile\Desktop
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $init = Get-Content -LiteralPath 'src\real_fast_negconv\__init__.py' -Raw
+          $version = [regex]::Match($init, '__version__ = "([^"]+)"').Groups[1].Value
+          $code = Get-Content -LiteralPath 'install.ps1' -Raw -Encoding UTF8
+          & ([scriptblock]::Create($code))
+          $found = Get-Command -Name 'uv' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          $uv = if ($null -ne $found) { $found.Source } else { Join-Path -Path $env:USERPROFILE -ChildPath '.local\bin\uv.exe' }
+          $bin = (& $uv tool dir --bin | Select-Object -First 1).Trim()
+          $app = Join-Path -Path $bin -ChildPath 'rfnegconv.exe'
+          if ((& $app --version) -ne "rfnegconv $version") { throw 'wrong version' }
+          $base = Join-Path -Path $env:RFNEGCONV_PICTURES_DIR -ChildPath 'rfnegconv'
+          foreach ($name in 'Negative', 'Fotos', 'Archiv') {
+            if (-not (Test-Path -LiteralPath (Join-Path -Path $base -ChildPath $name) -PathType Container)) { throw "folder $name missing" }
+          }
+          & ([scriptblock]::Create($code)) -Uninstall
+          if (Test-Path -LiteralPath $app) { throw 'program not removed' }
+          foreach ($name in 'Negative', 'Fotos', 'Archiv') {
+            if (-not (Test-Path -LiteralPath (Join-Path -Path $base -ChildPath $name) -PathType Container)) { throw "folder $name removed" }
+          }
