@@ -1,6 +1,5 @@
 """Typer CLI entry point."""
 
-import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -10,16 +9,18 @@ from typing import Annotated, Any, NoReturn
 
 import typer
 
-from real_fast_negconv import __version__
+from real_fast_negconv import __version__, config_file
 from real_fast_negconv.config import (
+    DIR_FIELDS,
     Config,
     default_config_path,
     default_log_dir,
     load_config,
 )
+from real_fast_negconv.config_file import SWITCHES
 from real_fast_negconv.exceptions import ConfigError, FolderError, RfNegconvError
 from real_fast_negconv.fileio.exiftool import ExifTool
-from real_fast_negconv.service import daemon
+from real_fast_negconv.service import daemon, update
 from real_fast_negconv.service.batch import (
     BUSY_MESSAGE,
     BatchResult,
@@ -28,12 +29,19 @@ from real_fast_negconv.service.batch import (
 )
 from real_fast_negconv.service.notify import notify, summary_message
 from real_fast_negconv.service.render import CROP_DETAIL
+from real_fast_negconv.service.selfcheck import (
+    ProblemNotifier,
+    remember_error_files,
+    self_check,
+)
 from real_fast_negconv.service.watcher import watch as watch_folder
 
 log = logging.getLogger(__name__)
 
 LOG_FILE_NAME = "rfnegconv.log"  # background watcher (service)
 RUN_LOG_FILE_NAME = "rfnegconv-run.log"  # single runs (launcher, terminal)
+RUN_CHANNEL = "run"  # update notice: single runs
+SERVICE_CHANNEL = "service"  # update notice: the background service
 
 app = typer.Typer(
     name="rfnegconv",
@@ -188,15 +196,60 @@ def watch(ctx: typer.Context) -> None:
     setup_logging(state.verbosity, default_log_dir(), LOG_FILE_NAME)
     cfg = _load(state, {})
 
+    active = cfg  # the config of the next batch, re-read before each batch
+    config_problem: str | None = None
+
     def on_problem(message: str) -> None:
-        if cfg.notify:
+        if active.notify:
             notify("rfnegconv", message)
+
+    def reload() -> None:
+        """Switches take effect at the next batch; a broken file keeps the last
+        good config (reported once); folder changes need a restart."""
+        nonlocal active, config_problem
+        try:
+            fresh = load_config(state.config_path)
+            fresh.require_dirs()
+        except RfNegconvError as exc:
+            message = (
+                "Konfiguration fehlerhaft – es gilt weiter die letzte gültige: "  # noqa: RUF001  # German typographic dash is intended
+                f"{exc}"
+            )
+            if message != config_problem:
+                config_problem = message
+                log.error("%s (config file: %s)", message, state.config_path)
+                on_problem(message)
+            return
+        config_problem = None
+        if fresh.require_dirs() != cfg.require_dirs():
+            log.warning("Changed folders take effect when the service restarts")
+            fresh = fresh.model_copy(
+                update={name: getattr(cfg, name) for name in DIR_FIELDS}
+            )
+        active = fresh
+
+    notifier = ProblemNotifier(on_problem)
+
+    def before_batch() -> None:
+        reload()
+        # folder problems are reported by the watcher itself
+        notifier.report(self_check(active, folders=False))
+        if active.update_check:
+            latest = update.new_version(SERVICE_CHANNEL)
+            if latest is not None:
+                on_problem(update.notice(latest))
+
+    def after_batch() -> None:
+        remember_error_files(active)  # reported with the batch
 
     try:
         watch_folder(
             cfg,
-            on_batch=lambda result: _report(cfg, state.verbosity, result),
+            on_batch=lambda result: _report(active, state.verbosity, result),
             on_problem=on_problem,
+            before_batch=before_batch,
+            after_batch=after_batch,
+            current_config=lambda: active,
         )
     except KeyboardInterrupt:
         log.info("Stopped.")
@@ -245,19 +298,43 @@ def config_init(
     negative: Annotated[Path, typer.Option("--negative", help="Input folder.")],
     photos: Annotated[Path, typer.Option("--photos", help="Output folder.")],
     archive: Annotated[Path, typer.Option("--archive", help="Archive folder.")],
+    off: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--off",
+            help=f"Set this switch to false (repeatable): {', '.join(SWITCHES)}.",
+        ),
+    ] = None,
+    expert_reset: Annotated[
+        bool,
+        typer.Option(
+            "--expert-reset", help="Set every expert threshold to its default."
+        ),
+    ] = False,
 ) -> None:
-    """Write a config with these folders unless one exists; create the folders.
+    """Write the complete config (every key) or add missing keys; create folders.
 
-    Prints key=value lines (config, status, negative, photos, archive).
+    An existing config keeps its values; only keys it lacks are added (with
+    their defaults) and the switches named with --off are set to false.
+    --expert-reset sets every expert threshold to its default.
+    Prints key=value lines (config, status, negative, photos, archive and
+    every switch); status is created, completed (file changed) or kept.
     """
     state: State = ctx.obj
     path = state.config_path
-    status = "kept"
     try:
-        if not path.exists():
-            _write_new_config(path, negative=negative, photos=photos, archive=archive)
-            status = "created"
-        negative_dir, archive_dir, photos_dir = load_config(path).require_dirs()
+        outcome = config_file.init_file(
+            path,
+            folders={
+                "negative_dir": negative,
+                "photos_dir": photos,
+                "archive_dir": archive,
+            },
+            switches_off=tuple(off or ()),
+            service_installed=daemon.installed,
+            expert_reset=expert_reset,
+        )
+        negative_dir, archive_dir, photos_dir = outcome.config.require_dirs()
         for folder in (negative_dir, photos_dir, archive_dir):
             folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -265,26 +342,12 @@ def config_init(
     except RfNegconvError as exc:
         _fail(state, exc)
     typer.echo(f"config={path}")
-    typer.echo(f"status={status}")
+    typer.echo(f"status={outcome.status}")
     typer.echo(f"negative={negative_dir}")
     typer.echo(f"photos={photos_dir}")
     typer.echo(f"archive={archive_dir}")
-
-
-def _write_new_config(
-    path: Path, *, negative: Path, photos: Path, archive: Path
-) -> None:
-    def quoted(folder: Path) -> str:  # a JSON string is a valid TOML basic string
-        return json.dumps(str(folder.expanduser()), ensure_ascii=False)
-
-    text = (
-        f"negative_dir = {quoted(negative)}\n"
-        f"photos_dir = {quoted(photos)}\n"
-        f"archive_dir = {quoted(archive)}\n"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:  # never overwrite
-        handle.write(text)
+    for name in SWITCHES:
+        typer.echo(f"{name}={str(getattr(outcome.config, name)).lower()}")
 
 
 def _service(action: Any) -> None:
@@ -307,12 +370,35 @@ def _load(state: State, overrides: dict[str, Any]) -> Config:
 def _run(state: State, overrides: dict[str, Any], *, summary: bool = False) -> None:
     setup_logging(state.verbosity, default_log_dir())
     cfg = _load(state, overrides)
+    # the service always uses the default config: only a run with that file
+    # may change it
+    default_config = _same_file(state.config_path, default_config_path())
+    if default_config:
+        sync_service(cfg)
+    findings = self_check(cfg, service=default_config)
+    for finding in findings:
+        if finding.fatal:
+            continue
+        if summary:
+            typer.echo(f"check={finding.message}")
+        elif state.verbosity >= 1:
+            typer.echo(finding.message, err=True)
+    fatal = next((f for f in findings if f.fatal), None)
+    if fatal is not None:
+        _fail(state, FolderError(fatal.message))
+    latest = update.new_version(RUN_CHANNEL) if cfg.update_check else None
+    if latest is not None:
+        if summary:
+            typer.echo(f"update={latest}")
+        elif state.verbosity >= 1:
+            typer.echo(f"New version {latest} available: {update.UPDATE_URL}")
     try:
         result = run_batch(cfg)
     except RfNegconvError as exc:
         _fail(state, exc)
     except OSError as exc:  # anything the batch did not classify itself
         _fail(state, FolderError(f"{exc.strerror or exc} ({exc.filename or '-'})"))
+    remember_error_files(cfg)  # this run reports its own failures
     problem = problem_message(result)
     if summary:  # the launcher reports the outcome itself (dialog, no notification)
         if problem is not None:  # shown by the launcher instead of the counts
@@ -326,6 +412,24 @@ def _run(state: State, overrides: dict[str, Any], *, summary: bool = False) -> N
     _report(cfg, state.verbosity, result)
     if result.failed:
         raise typer.Exit(1)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.expanduser().resolve() == b.expanduser().resolve()
+    except OSError:
+        return False
+
+
+def sync_service(cfg: Config) -> None:
+    """Install or remove the background service so it follows `service`."""
+    try:
+        done = daemon.reconcile(cfg.service, log_dir=default_log_dir())
+    except RfNegconvError as exc:  # the self-check reports the mismatch
+        log.warning("Background service not changed: %s", exc)
+        return
+    if done is not None:
+        log.info("Background service (service = %s): %s", cfg.service, done)
 
 
 def summary_line(result: BatchResult) -> str:

@@ -9,7 +9,6 @@ from real_fast_negconv.core.geometry import Rect
 
 EPS = 1.0 / 65535.0
 MIN_SPREAD = 0.05
-CHUNK_ROWS = 256
 LN10 = float(np.log(10.0))
 
 type FloatImage = npt.NDArray[np.float32]
@@ -119,16 +118,6 @@ def apply_black_point(
     return linear
 
 
-def to_mono(linear: FloatImage, *, clip: bool = False) -> FloatImage:
-    """Average the colour channels into a single grey channel.
-
-    `clip=True` averages the channels limited to [0, 1], in row chunks (no
-    full-size clipped copy).
-    """
-    if not clip:
-        return np.asarray(linear.mean(axis=-1), dtype=np.float32)
-    out = np.empty(linear.shape[:2], np.float32)
-    for start in range(0, linear.shape[0], CHUNK_ROWS):
-        rows = slice(start, start + CHUNK_ROWS)
-        out[rows] = np.clip(linear[rows], 0.0, 1.0).mean(axis=-1)
-    return out
+def to_mono(linear: FloatImage) -> FloatImage:
+    """Average the colour channels into a single grey channel (unclipped)."""
+    return np.asarray(linear.mean(axis=-1), dtype=np.float32)

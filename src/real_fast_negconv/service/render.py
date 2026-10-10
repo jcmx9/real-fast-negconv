@@ -28,7 +28,7 @@ from real_fast_negconv.core.converter import (
 )
 from real_fast_negconv.core.crossover import crossover_note
 from real_fast_negconv.core.geometry import Rect, deskew, orient
-from real_fast_negconv.core.look import apply_look_params
+from real_fast_negconv.core.look import apply_look_linear, apply_look_params
 from real_fast_negconv.core.metadata import describe
 from real_fast_negconv.core.rolls import RollDecision
 from real_fast_negconv.fileio import raw_loader
@@ -48,10 +48,10 @@ PREVIEW_LONG_EDGE = 1024
 
 @dataclass(frozen=True)
 class OutputPaths:
-    """Target files of one frame; `dng` is None when DNG output is disabled."""
+    """Target files of one frame; `dng`/`tiff` are None when switched off."""
 
     dng: Path | None
-    tiff: Path
+    tiff: Path | None
     jpeg: Path
 
 
@@ -66,7 +66,7 @@ class Developed:
 
 
 def assign_outputs(
-    stems: Sequence[str], photos_dir: Path, with_dng: bool
+    stems: Sequence[str], photos_dir: Path, with_dng: bool, with_tiff: bool = True
 ) -> list[OutputPaths]:
     """Collision-free output names; never overwrites existing files."""
     taken: set[str] = set()
@@ -83,7 +83,7 @@ def assign_outputs(
         result.append(
             OutputPaths(
                 dng=photos_dir / f"{name}.dng" if with_dng else None,
-                tiff=photos_dir / f"{name}.tif",
+                tiff=photos_dir / f"{name}.tif" if with_tiff else None,
                 jpeg=photos_dir / f"{name}.jpg",
             )
         )
@@ -120,7 +120,9 @@ def develop(
     black = black_point(linear, crop.inner(cfg.measure_inset))
     apply_black_point(linear, black, clip=False)
     if decision.is_bw:
-        srgb = srgb_encode(to_mono(linear[crop.slices()], clip=True), inplace=True)
+        # average first, limit afterwards (srgb_encode clips): the BW DNG,
+        # rendered, then gives exactly these values
+        srgb = srgb_encode(to_mono(linear[crop.slices()]), inplace=True)
         linear = to_mono(linear)
     else:
         cropped = apply_matrix(
@@ -196,16 +198,24 @@ def render(
         exiftool.camera_name(source) if exiftool.available else None
     ) or FALLBACK_CAMERA
     camera = camera.encode("ascii", "replace").decode("ascii")
+    # the same gentle correction for all three outputs; the DNG keeps the
+    # values outside 0-1 (see apply_look_linear)
+    corrected = apply_look_params(srgb, decision.look)
+    del srgb
     written: list[Path] = []
     try:
         if outputs.dng is not None:
+            if decision.is_bw:
+                apply_look_linear(linear, decision.look)
+            else:
+                apply_look_linear(linear, decision.look, camera_to_srgb_matrix(matrix))
             if linear.ndim == 2:
                 linear = np.repeat(linear[..., None], 3, axis=2)
             write_dng(
                 outputs.dng,
                 linear,
                 crop=crop,
-                preview=make_preview(srgb),
+                preview=make_preview(corrected),
                 xyz_to_cam=matrix,
                 camera=camera,
                 description=description,
@@ -213,9 +223,9 @@ def render(
             )
             written.append(outputs.dng)
         del linear
-        corrected = apply_look_params(srgb, decision.look)
-        write_tiff(outputs.tiff, corrected, description=description)
-        written.append(outputs.tiff)
+        if outputs.tiff is not None:
+            write_tiff(outputs.tiff, corrected, description=description)
+            written.append(outputs.tiff)
         write_jpeg(
             outputs.jpeg,
             corrected,

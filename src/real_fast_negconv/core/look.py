@@ -1,17 +1,23 @@
-"""Gentle correction for JPEG/TIFF (contrast, saturation); DNG stays neutral.
+"""Gentle correction (contrast, saturation) for TIFF, JPEG and DNG.
 
 Three steps: `measure_sampled` reads statistics from a neutral image,
 `look_params` turns statistics into parameters, `apply_look_params` applies
-them. The look never changes the exposure: it only adds contrast and
-saturation, both from the roll group's median statistics when given. All
-statistics are taken on the neutral image (crossover applied).
+them to an sRGB-encoded image (TIFF/JPEG); `apply_look_linear` applies the
+same correction to the scene-linear DNG data. The look never changes the
+exposure: it only adds contrast and saturation, both from the roll group's
+median statistics when given. All statistics are taken on the neutral image
+(crossover applied).
 """
 
 from dataclasses import dataclass
 
 import numpy as np
+import numpy.typing as npt
 
+from real_fast_negconv.core.color import srgb_decode, srgb_encode
 from real_fast_negconv.core.converter import FloatImage
+
+CHUNK_ROWS = 256
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
@@ -103,6 +109,50 @@ def apply_look_params(srgb: FloatImage, params: LookParams) -> FloatImage:
         _saturate_inplace(out, params.saturation)
     np.clip(out, 0.0, 1.0, out=out)
     return out
+
+
+def is_identity(params: LookParams) -> bool:
+    """True if the look changes nothing (no contrast, no saturation boost)."""
+    return params.contrast <= 0.0 and (params.is_bw or params.saturation <= 1.0)
+
+
+def apply_look_linear(
+    linear: FloatImage,
+    params: LookParams,
+    cam_to_srgb: npt.NDArray[np.floating] | None = None,
+) -> None:
+    """Apply the TIFF/JPEG correction to scene-linear data, in place.
+
+    Per pixel (in row chunks): x = cam_to_srgb @ camera (colour; BW: the
+    mono value), c = x limited to [0, 1], then
+    x' = decode(apply_look_params(encode(c))) + (x - c) and back to camera
+    space with the inverse matrix. Inside [0, 1] the result, converted to sRGB
+    and encoded the way the TIFF is made, gives the TIFF's values; values
+    outside [0, 1] keep their distance to the end of the range (slope 1), so
+    highlights above the white point and shadows below the black point stay
+    as recoverable as before. The curve is continuous at 0 and 1; its slope
+    there is 1 - contrast, outside it is 1.
+    """
+    if is_identity(params):
+        return
+    matrix = inverse = None
+    if cam_to_srgb is not None and linear.ndim == 3:
+        matrix = np.asarray(cam_to_srgb, np.float32)
+        try:
+            inverse = np.linalg.inv(matrix.astype(np.float64)).astype(np.float32)
+        except np.linalg.LinAlgError:
+            matrix = None
+    for start in range(0, linear.shape[0], CHUNK_ROWS):
+        rows = slice(start, start + CHUNK_ROWS)
+        x = linear[rows] @ matrix.T if matrix is not None else linear[rows].copy()
+        clipped = np.clip(x, 0.0, 1.0)
+        x -= clipped  # the part outside [0, 1]
+        corrected = apply_look_params(srgb_encode(clipped, inplace=True), params)
+        x += srgb_decode(corrected, inplace=True)
+        if matrix is not None and inverse is not None:
+            linear[rows] = x @ inverse.T
+        else:
+            linear[rows] = x
 
 
 def _saturate_inplace(out: FloatImage, saturation: float) -> None:

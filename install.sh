@@ -8,11 +8,16 @@
 #
 # Besides the background service it creates the program "Negative entwickeln"
 # (macOS: ~/Applications, Linux: application menu) that processes the Negative
-# folder once and shows the result. --ohne-dienst installs no service (an
-# existing one is removed); a run without it installs the service again.
+# folder once and shows the result.
 #
-# Running it again updates the program. Existing config, folders and images
-# are never changed or deleted. No admin rights needed.
+# Options --ohne-dng, --ohne-tiff, --ohne-kontaktabzug and --ohne-dienst set
+# the switch of the same meaning in the config to false. A run without an
+# option leaves that switch as it is in the config. The background service
+# follows the switch "service" (installed when true, removed when false).
+#
+# Running it again updates the program. The config only gets missing keys
+# (and the switches named as options); folders and images are never changed
+# or deleted. No admin rights needed.
 #
 # Environment (tests/CI):
 #   RFNEGCONV_SOURCE        local path or uv source spec instead of the release
@@ -26,7 +31,7 @@
 #             6 unsafe environment (HOME empty or "/").
 set -eu
 
-RFNEGCONV_VERSION="26.10.7"
+RFNEGCONV_VERSION="26.10.8"
 APP_NAME="real-fast-negconv"
 REPO_URL="https://github.com/jcmx9/real-fast-negconv"
 RAW_URL="https://raw.githubusercontent.com/jcmx9/real-fast-negconv"
@@ -39,7 +44,8 @@ OS=""
 DATA_DIR=""
 STATE_FILE=""
 EXIFTOOL_DIR=""
-WITHOUT_SERVICE=0
+OFF_SWITCHES=""
+SERVICE_SWITCH=""
 SERVICE_REMOVED=0
 LAUNCHER_NAME="Negative entwickeln"
 LAUNCHER_ID="io.github.jcmx9.rfnegconv.launcher"
@@ -66,10 +72,13 @@ cleanup() {
 }
 
 usage() {
-    say "Aufruf: install.sh [--ohne-dienst | --uninstall]"
-    say "  ohne Option    installieren oder aktualisieren (mit Hintergrunddienst)"
-    say "  --ohne-dienst  ohne Hintergrunddienst: umwandeln nur über „${LAUNCHER_NAME}“"
-    say "  --uninstall    Programm entfernen (Ordner, Bilder und Einstellungen bleiben)"
+    say "Aufruf: install.sh [--ohne-dng] [--ohne-tiff] [--ohne-kontaktabzug] [--ohne-dienst] | --uninstall"
+    say "  ohne Option          installieren oder aktualisieren (Schalter bleiben, wie sie sind)"
+    say "  --ohne-dng           keine DNG-Dateien (Schalter dng = false)"
+    say "  --ohne-tiff          keine TIFF-Dateien (Schalter tiff = false)"
+    say "  --ohne-kontaktabzug  kein Kontaktabzug nach jedem Lauf (Schalter contact_sheet = false)"
+    say "  --ohne-dienst        ohne Hintergrunddienst: umwandeln nur über „${LAUNCHER_NAME}“ (Schalter service = false)"
+    say "  --uninstall          Programm entfernen (Ordner, Bilder und Einstellungen bleiben)"
 }
 
 detect_system() {
@@ -326,8 +335,12 @@ setup_folders() {
     pictures="${RFNEGCONV_PICTURES_DIR:-$(xdg_dir PICTURES "${HOME}/Pictures")}"
     base="${pictures}/rfnegconv"
     say "→ Richte Ordner und Einstellungen ein …"
-    if ! output="$(rfnegconv config init --negative "${base}/Negative" \
-        --photos "${base}/Fotos" --archive "${base}/Archiv")"; then
+    set -- config init --negative "${base}/Negative" --photos "${base}/Fotos" \
+        --archive "${base}/Archiv"
+    for switch in ${OFF_SWITCHES}; do
+        set -- "$@" --off "${switch}"
+    done
+    if ! output="$(rfnegconv "$@")"; then
         hint "Die Einstellungen konnten nicht eingerichtet werden (siehe Meldung oben). Bitte die Datei config.toml prüfen."
         return 1
     fi
@@ -335,16 +348,19 @@ setup_folders() {
     PHOTOS_DIR="$(printf '%s\n' "${output}" | sed -n 's/^photos=//p')"
     ARCHIVE_DIR="$(printf '%s\n' "${output}" | sed -n 's/^archive=//p')"
     CONFIG_FILE="$(printf '%s\n' "${output}" | sed -n 's/^config=//p')"
+    SERVICE_SWITCH="$(printf '%s\n' "${output}" | sed -n 's/^service=//p')"
     state_set negative_dir "${NEGATIVE_DIR}"
-    if [ "$(printf '%s\n' "${output}" | sed -n 's/^status=//p')" = "kept" ]; then
-        say "✓ Vorhandene Einstellungen übernommen."
-    else
-        say "✓ Ordner angelegt."
-    fi
+    case "$(printf '%s\n' "${output}" | sed -n 's/^status=//p')" in
+        kept) say "✓ Vorhandene Einstellungen übernommen." ;;
+        completed) say "✓ Konfiguration angepasst: ${CONFIG_FILE}" ;;
+        *) say "✓ Ordner angelegt." ;;
+    esac
 }
 
 setup_service() {
-    if [ "${WITHOUT_SERVICE}" = "1" ]; then
+    # the service follows the switch "service" in the config; it is removed
+    # only when config init reports service=false explicitly
+    if [ "${SERVICE_SWITCH}" = "false" ]; then
         remove_service
         return 0
     fi
@@ -361,7 +377,7 @@ setup_service() {
 }
 
 remove_service() {
-    # --ohne-dienst: an installed service is stopped and removed
+    # service = false: an installed service is stopped and removed
     if [ "${RFNEGCONV_NO_SERVICE:-}" = "1" ]; then
         say "(Test) Hintergrunddienst übersprungen – würde ausführen: rfnegconv service uninstall"
         SERVICE_REMOVED=1
@@ -444,6 +460,8 @@ write_launcher_script() {
         printf 'export PATH\n'
         printf 'RFNEGCONV=%s\n' "$(sh_quote "${2}")"
         printf 'TITLE=%s\n' "$(sh_quote "${LAUNCHER_NAME}")"
+        printf 'PAGE_BUTTON=%s\n' "$(sh_quote "Projektseite öffnen")"
+        printf 'UPDATE_URL=%s\n' "$(sh_quote "${REPO_URL}#update")"
         if [ "${OS}" = "macos" ]; then
             cat <<'EOF'
 
@@ -457,6 +475,19 @@ show_message() {
     osascript -e 'on run argv' -e 'activate' \
         -e 'display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK"' \
         -e 'end run' "${1}" "${TITLE}" >/dev/null 2>&1 || printf '%s\n' "${1}"
+}
+
+ask_page() {
+    # ask_page TEXT – dialog with the buttons "Projektseite öffnen" and "OK";
+    # true if the first one was chosen
+    button="$(osascript -e 'on run argv' -e 'activate' \
+        -e 'button returned of (display dialog (item 1 of argv) with title (item 2 of argv) buttons {(item 3 of argv), "OK"} default button "OK")' \
+        -e 'end run' "${1}" "${TITLE}" "${PAGE_BUTTON}" 2>/dev/null)" || button=""
+    [ "${button}" = "${PAGE_BUTTON}" ]
+}
+
+open_page() {
+    open "${1}" >/dev/null 2>&1 || true
 }
 EOF
         else
@@ -479,6 +510,27 @@ show_message() {
     else
         printf '%s\n' "${1}"
     fi
+}
+
+ask_page() {
+    # ask_page TEXT – dialog with the buttons "Projektseite öffnen" and "OK";
+    # true if the first one was chosen (without zenity or kdialog: the address
+    # is shown in the message)
+    if command -v zenity >/dev/null 2>&1; then
+        markup="$(printf '%s' "${1}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+        zenity --question --title="${TITLE}" --text="${markup}" \
+            --ok-label="${PAGE_BUTTON}" --cancel-label="OK" >/dev/null 2>&1
+    elif command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "${TITLE}" --yes-label "${PAGE_BUTTON}" --no-label "OK" \
+            --yesno "${1}" >/dev/null 2>&1
+    else
+        show_message "$(printf '%s\n\n%s' "${1}" "${UPDATE_URL}")"
+        return 1
+    fi
+}
+
+open_page() {
+    xdg-open "${1}" >/dev/null 2>&1 || true
 }
 EOF
         fi
@@ -518,7 +570,21 @@ result_text() {
 show_notice 'Negative werden entwickelt …'
 status=0
 output="$("${RFNEGCONV}" -Q run --summary 2>&1)" || status=$?
-show_message "$(result_text "${output}" "${status}")"
+text="$(result_text "${output}" "${status}")"
+# self-check findings (only problems), one line each
+checks="$(printf '%s\n' "${output}" | sed -n 's/^check=//p')"
+if [ -n "${checks}" ]; then
+    text="$(printf '%s\n\n%s' "${text}" "${checks}")"
+fi
+version="$(printf '%s\n' "${output}" | sed -n 's/^update=//p' | head -n 1)"
+if [ -n "${version}" ]; then
+    text="$(printf '%s\n\nNeue Version %s verfügbar – siehe Update-Abschnitt auf der Projektseite.' "${text}" "${version}")"
+    if ask_page "${text}"; then
+        open_page "${UPDATE_URL}"
+    fi
+else
+    show_message "${text}"
+fi
 exit 0
 EOF
     } >"${1}"
@@ -651,11 +717,8 @@ summary() {
             say "Sofort umwandeln: Programm „${LAUNCHER_NAME}“ (in ${LAUNCHER_PLACE})."
         fi
     fi
-    if [ "${WITHOUT_SERVICE}" = "1" ]; then
-        say "Aktualisieren: curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh -s -- --ohne-dienst"
-    else
-        say "Aktualisieren: denselben Befehl noch einmal ausführen."
-    fi
+    say "Aktualisieren: curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh"
+    say "               (die Schalter in den Einstellungen bleiben dabei, wie sie sind)"
     say "Wird „rfnegconv“ im Terminal nicht gefunden: ein neues Terminalfenster öffnen."
     say "Entfernen:     curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh -s -- --uninstall"
 }
@@ -787,7 +850,10 @@ main() {
     for arg in "$@"; do
         case "${arg}" in
             --uninstall) mode="uninstall" ;;
-            --ohne-dienst) WITHOUT_SERVICE=1 ;;
+            --ohne-dng) OFF_SWITCHES="${OFF_SWITCHES} dng" ;;
+            --ohne-tiff) OFF_SWITCHES="${OFF_SWITCHES} tiff" ;;
+            --ohne-kontaktabzug) OFF_SWITCHES="${OFF_SWITCHES} contact_sheet" ;;
+            --ohne-dienst) OFF_SWITCHES="${OFF_SWITCHES} service" ;;
             -h | --help)
                 usage
                 exit 0

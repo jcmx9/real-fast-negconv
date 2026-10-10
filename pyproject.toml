@@ -55,7 +55,7 @@ Issues = "https://github.com/jcmx9/real-fast-negconv/issues"
 path = "src/real_fast_negconv/__init__.py"
 
 [tool.bumpversion]
-current_version = "26.10.7"
+current_version = "26.10.8"
 commit = true
 tag = true
 tag_name = "v{new_version}"

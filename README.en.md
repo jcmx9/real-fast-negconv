@@ -1,11 +1,27 @@
 # real-fast-negconv
 
-**Version 26.10.7** · [Deutsch](README.md)
+**Version 26.10.8** · [Deutsch](README.md)
 
 > Automatically converts camera RAW scans of film negatives (colour and black and white) into DNG, TIFF and JPEG positives.
 
 [![CI](https://github.com/jcmx9/real-fast-negconv/actions/workflows/ci.yml/badge.svg)](https://github.com/jcmx9/real-fast-negconv/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## Update
+
+To get the latest version, run the same command as for the installation. macOS and Linux (Terminal):
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1 | iex"
+```
+
+Settings, folders and images are kept; the switches in the configuration stay as they are (an update without an option switches nothing, see [Installer options](#installer-options)). The configuration only gets the keys it lacks. The program never updates itself; with `update_check = true` it points out a new version (see [Notice of new versions](#notice-of-new-versions)). Manually with uv: see [For advanced users](#for-advanced-users-manually-with-uv).
 
 ## Principles
 
@@ -22,7 +38,7 @@
 - The installer sets up everything else (see below). Only for the manual installation: [uv](https://docs.astral.sh/uv/) (installs a suitable Python ≥ 3.12 on its own), git and [exiftool](https://exiftool.org/) (recommended, copies camera metadata): `brew install exiftool` (macOS), `winget install OliverBetz.ExifTool` (Windows) or your distribution's package manager (Linux). Without exiftool everything works, the outputs just carry no camera data.
 - Linux only: Perl for exiftool (usually present) and, for notifications, `notify-send` (e.g. package `libnotify-bin` on Debian/Ubuntu)
 
-## Installation and update
+## Installation
 
 One command sets up everything. macOS and Linux (Terminal):
 
@@ -36,14 +52,14 @@ Windows (PowerShell):
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1 | iex"
 ```
 
-**Update:** run the same command again. An existing configuration, folders and images are never changed.
+**Update:** run the same command again (see [Update](#update)).
 
 The installer
 
 1. sets up [uv](https://docs.astral.sh/uv/) if it is missing (uv brings its own Python),
 2. installs real-fast-negconv in the version that belongs to the installer, with the library versions fixed for it (`constraints.txt` of that version),
-3. creates the folders `rfnegconv/Negative`, `Fotos` and `Archiv` in the user's Pictures folder (macOS and Linux `~/Pictures`, Windows „Bilder“) and writes the configuration – only if none exists yet (otherwise the folders entered there apply),
-4. starts the background service (with the "without service" option instead: no service, an existing one is removed – see below),
+3. creates the folders `rfnegconv/Negative`, `Fotos` and `Archiv` in the user's Pictures folder (macOS and Linux `~/Pictures`, Windows „Bilder“) and writes the complete configuration: every key with its value and a short comment, all switches `true`. If a configuration exists already, its folders and values apply; it only gets missing keys, each with the value that applied so far (a missing `service` with the current state: service set up – `true`, otherwise `false`). Switches given as options are set to `false` (see [Installer options](#installer-options)),
+4. sets up the background service according to the switch `service`: `true` sets it up and starts it, `false` removes an existing one,
 5. puts the shortcuts „Negative“ and „Fotos“ on the desktop (your own shortcuts of the same name are left alone),
 6. creates the program „Negative entwickeln“ (develop negatives): macOS in the user's Applications folder (`~/Applications`), Windows in the Start menu, Linux in the application menu (`~/.local/share/applications`); your own program of the same name is left alone,
 7. sets up exiftool last if it is missing (macOS with Homebrew via `brew`, otherwise the official package from exiftool.org with a verified checksum in the app data folder; on Linux only if Perl is present). This usually takes at most about a minute. If the server is unreachable, the installer gives up after about 20 seconds (connecting takes at most 10 seconds, with one retry; a refused connection fails at once). With curl a download takes at most about 2 minutes including a retry, the exiftool package at most about 10 minutes; if that fails, it is loaded once from the mirror (again at most about 10 minutes). On Windows a download stops when the server does not answer for 30 seconds (no retry); the exiftool package has at most 10 minutes and is loaded once from the mirror if that fails. Without curl, with wget, there is no overall limit: a download stops as soon as no data arrives for 10 seconds and is retried once. The installation via Homebrew has no time limit. If it fails, a hint appears and everything else is set up anyway,
@@ -53,21 +69,34 @@ An update on Windows stops only the background service; if a run via „Negative
 
 After that it is enough to put scans into the „Negative“ folder; the pictures appear in „Fotos“ automatically. If you do not want to wait, start „Negative entwickeln“.
 
-### Without background service
+### Installer options
 
-If you prefer to start processing yourself, install without the service. A service that is already running is removed; processing then starts only via the program „Negative entwickeln“. macOS and Linux:
+Each option sets a switch in the configuration to `false`:
+
+| macOS, Linux | Windows | Switch | Effect |
+|--------------|---------|--------|--------|
+| `--ohne-dng` | `-OhneDng` | `dng = false` | no DNG files |
+| `--ohne-tiff` | `-OhneTiff` | `tiff = false` | no TIFF files |
+| `--ohne-kontaktabzug` | `-OhneKontaktabzug` | `contact_sheet = false` | no contact sheet after a run |
+| `--ohne-dienst` | `-OhneDienst` | `service = false` | no background service (an existing one is removed); processing then starts only via „Negative entwickeln“ |
+
+Precisely:
+
+- A run of the installer changes only the switches given as options. All others keep the value in the configuration – also on an update without an option.
+- An option only switches off. A switch is switched on by replacing `false` with `true` in the configuration file (location see [Configuration](#location-of-the-configuration-file)). For `service` the next run („Negative entwickeln“, `rfnegconv run` or the installer) then sets up the service again.
+- Options can be combined. JPEG is always written.
+
+Example without service and without TIFF, macOS and Linux:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh -s -- --ohne-dienst
+curl -LsSf https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.sh | sh -s -- --ohne-dienst --ohne-tiff
 ```
 
 Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1))) -OhneDienst"
+powershell -ExecutionPolicy ByPass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1))) -OhneDienst -OhneTiff"
 ```
-
-The normal installation command (without the option) sets up the service again. For updates use the same command as for the installation, i.e. with the option as long as no service should run.
 
 ### For advanced users: manually with uv
 
@@ -91,13 +120,13 @@ uv tool install git+https://github.com/jcmx9/real-fast-negconv.git
 
 Without `--constraints` uv resolves the newest matching libraries; the same versions as the installer are obtained with `--constraints constraints.txt` using the file from the repository.
 
-Update to the latest version (the configuration is kept):
+Update to the latest version (the configuration is kept; `config init` afterwards adds missing keys):
 
 ```bash
 uv tool install --force git+https://github.com/jcmx9/real-fast-negconv.git
 ```
 
-Create the folders and the configuration (written only if no configuration exists yet) and start the service:
+Create the folders and the complete configuration (an existing one only gets missing keys; `--off SWITCH` sets a switch to `false`) and start the service:
 
 ```bash
 rfnegconv config init --negative ~/Pictures/rfnegconv/Negative --photos ~/Pictures/rfnegconv/Fotos --archive ~/Pictures/rfnegconv/Archiv
@@ -155,7 +184,9 @@ One click processes the `Negative/` folder once. At the start a short notice „
 | „Wird gerade im Hintergrund verarbeitet.“ | The service (or another run) is working right now; it takes care of the files (being processed in the background) |
 | „Die Negative konnten nicht entwickelt werden.“ | With the reason below, e.g. „Ordner nicht erreichbar: … – ist das Laufwerk angeschlossen?“ (folder not reachable – is the drive connected?), „Kein Speicherplatz mehr frei. Verarbeitung angehalten: …“ (no space left, processing stopped) or a faulty configuration (the negatives could not be developed) |
 
-Processing a whole film can take a few minutes; the result message appears only afterwards. The program runs `rfnegconv -Q run --summary` (the path to `rfnegconv` and, on macOS and Linux, the `PATH` are filled in at installation). Implementation: macOS `~/Applications/Negative entwickeln.app` with a shell script and an AppleScript dialog; Windows `Negative entwickeln.lnk` in the Start menu, which starts `negative-entwickeln.vbs` in the app data folder with `wscript.exe`; Linux `negative-entwickeln.desktop`, which starts `negative-entwickeln.sh` in the app data folder and shows the result with zenity, kdialog or notify-send (whichever is present; the notice at the start only with notify-send).
+Further lines appear below only when needed: one per problem of the [self-check](#self-check) (e.g. „Wenig Speicherplatz frei: 1,5 GB …“, little free space) and, if there is a new version, „Neue Version X verfügbar – siehe Update-Abschnitt auf der Projektseite.“ (new version X available – see the Update section on the project page). The window then has a second button „Projektseite öffnen“ (open project page) that opens the section [Update](#update) of this page in the browser (Windows: buttons „Ja“/„Nein“ (yes/no) to the question „Projektseite öffnen?“; Linux without zenity and kdialog: the address is in the message).
+
+Processing a whole film can take a few minutes; the result message appears only afterwards. There is no second program or button for the check. The program runs `rfnegconv -Q run --summary` (the path to `rfnegconv` and, on macOS and Linux, the `PATH` are filled in at installation). Implementation: macOS `~/Applications/Negative entwickeln.app` with a shell script and an AppleScript dialog; Windows `Negative entwickeln.lnk` in the Start menu, which starts `negative-entwickeln.vbs` in the app data folder with `wscript.exe`; Linux `negative-entwickeln.desktop`, which starts `negative-entwickeln.sh` in the app data folder and shows the result with zenity, kdialog or notify-send (whichever is present; the notice at the start only with notify-send).
 
 ### Without a terminal: double-click starters
 
@@ -163,7 +194,9 @@ Processing a whole film can take a few minutes; the result message appears only 
 
 ### Background service
 
-The service watches `Negative/`, waits until copying has finished and then processes the files on its own. It starts at every login. At the end of each batch a desktop notification shows „N Fotos fertig, M Fehler“ (N pictures done, M errors), with the reason added for a folder problem. If a folder is unreachable (e.g. external drive disconnected), the service reports this once (log and notification) and keeps retrying quietly until the folder is back.
+The service watches `Negative/`, waits until copying has finished and then processes the files on its own. It starts at every login. At the end of each batch a desktop notification shows „N Fotos fertig, M Fehler“ (N pictures done, M errors), with the reason added for a folder problem. If a folder is unreachable (e.g. external drive disconnected), the service reports this once (log and notification) and keeps retrying quietly until the folder is back. Before each batch it checks itself quietly ([self-check](#self-check)); each problem appears as one notification, and again only when it has changed or has gone and come back. It reports a new version once with „Neue Version X verfügbar – siehe Update-Abschnitt auf der Projektseite“.
+
+**The service follows the switch `service`.** Every run („Negative entwickeln“, `rfnegconv run`) and every run of the installer reconciles it: `service = true` and no service set up – set it up and start it; `service = false` and a service set up – remove it. If it already is as the switch says, nothing is touched. This applies only to runs with the normal configuration file (the service always uses that one); a run with `--config OTHER.toml` neither changes nor checks the service. The service itself re-reads the configuration before each of its batches: changed switches apply from its next batch; changed folders only after the service restarts (e.g. at the next login); if the file is faulty, it keeps working with the last valid settings and reports this once. The commands below act at once; at the next run, however, the switch applies again. To switch it off for good: set `service = false` or install with `--ohne-dienst`.
 
 ```bash
 rfnegconv service install
@@ -179,6 +212,30 @@ rfnegconv service uninstall
 
 Implementation: macOS LaunchAgent `~/Library/LaunchAgents/io.github.jcmx9.rfnegconv.plist` (restarted after a crash), Windows `rfnegconv.vbs` in the startup folder (no admin rights needed), Linux systemd user unit `~/.config/systemd/user/rfnegconv.service` (`Restart=on-failure`). The service runs `rfnegconv -Q watch`; the `PATH` at installation time is taken over so that exiftool is found.
 
+### Self-check
+
+Before every run („Negative entwickeln“, `rfnegconv run`) and before every batch of the service the program checks quietly:
+
+| Check | Message only for a problem |
+|-------|----------------------------|
+| The three folders are reachable and writable | „Ordner nicht erreichbar: …“ (folder not reachable) or „Keine Berechtigung für den Ordner: …“ (no permission); a run then does not start (the service reports folder problems itself, see above) |
+| Free space on the drive of `Negative/` and `Fotos/` at least 2 GiB (about 2.1 GB; the message gives GB like Finder and Explorer) | „Wenig Speicherplatz frei: 1,5 GB auf dem Laufwerk mit dem Ordner „Fotos“.“ (little free space) |
+| exiftool is found | „exiftool wurde nicht gefunden – die Fotos bekommen keine Kameradaten.“ (exiftool not found, no camera data) |
+| New files in `Negative/_Fehler/` since the last check | „1 neue Datei in Negative/_Fehler – der Grund steht jeweils in der .txt-Datei daneben.“ (1 new file, the reason is in the .txt file next to it) |
+| The background service matches the switch `service` | „Der Hintergrunddienst ist nicht eingerichtet, obwohl „service = true“ eingestellt ist.“ (service not set up although `service = true`; or the other way round) |
+
+If everything is fine, nothing appears. Problems appear as additional lines in the result window of „Negative entwickeln“, on the console for `rfnegconv run`, for the service as one notification each (not repeated at every batch while nothing changes), and always in the log. Which files in `_Fehler/` have been reported, the program remembers once for all runs and the service together (file `selfcheck.json` in the app data folder): a file is reported only once – in the result of the run that put it there, or by the next self-check – and not again by the service or by „Negative entwickeln“. If `_Fehler/` cannot be read, this record stays unchanged.
+
+### Notice of new versions
+
+With `update_check = true` the program asks GitHub for the latest version at most once in 7 days (before a run or a batch of the service). Exactly one HTTPS request is sent, to `https://api.github.com/repos/jcmx9/real-fast-negconv/releases/latest` (with the identifier `real-fast-negconv/<version>`), nothing else – no file names, pictures or settings. As with any web page, GitHub sees the IP address. It waits at most 5 seconds; without internet or on an error nothing happens (the next attempt after 7 days). If the version on GitHub is newer than the installed one, it reports this once per new version:
+
+- „Negative entwickeln“: a line in the result window and the button „Projektseite öffnen“ (open project page), which opens the section [Update](#update) in the browser,
+- service: a notification „Neue Version X verfügbar – siehe Update-Abschnitt auf der Projektseite“,
+- `rfnegconv run`: a line with the address.
+
+The program never updates itself; the update is started with the command under [Update](#update). `update_check = false` switches the request off completely. The time of the last request and the reported versions are in `update-check.json` in the app data folder.
+
 ## Configuration
 
 ### Location of the configuration file
@@ -193,21 +250,35 @@ A different file can be given with `--config PATH`. If the file is missing or a 
 
 ### Example
 
+`rfnegconv config init` (and so the installer) writes every key with its value and a short comment (in German, for the end user), grouped as below; to change something, replace just a value, e.g. `true` with `false`. An excerpt:
+
 ```toml
-negative_dir = "~/Film/Negative"
-archive_dir  = "~/Film/Archiv"
-photos_dir   = "~/Film/Fotos"
-rotate = 0                    # 0 | 90 | 180 | 270 (clockwise)
-mirror = false                # true when shot from the emulsion side
-dng = true                    # false: only TIFF + JPEG
-dng_finder_preview = false    # true: larger DNG that Finder and Quick Look display
+# Ordner
+negative_dir = "~/Film/Negative"  # Eingang: hier RAW-Dateien hineinlegen
+photos_dir = "~/Film/Fotos"        # fertige Bilder
+archive_dir = "~/Film/Archiv"      # Originale nach der Verarbeitung
+
+# Ausgaben (JPEG wird immer geschrieben)
+dng = true                  # DNG schreiben
+tiff = true                 # TIFF schreiben
+contact_sheet = true        # nach jedem Lauf ein Kontaktabzug in „Fotos“
+
+# Ausrichtung
+rotate = 0                  # 0, 90, 180 oder 270 (im Uhrzeigersinn)
+mirror = false              # true: von der Schichtseite fotografiert
+
+# Dienst und Betrieb
+service = true              # Hintergrunddienst: neue Negative automatisch umwandeln
+update_check = true         # höchstens einmal pro Woche nach neuer Version sehen
 ```
+
+A configuration that lacks keys is completed by `rfnegconv config init` (also on every run of the installer): these keys are added at the end of the file, each with the value that applied so far (default or derived from other keys, e.g. `holder_min` from `holder_delta`; a missing `service` with the current state of the service, so that an update never brings back a removed service); existing lines and values stay unchanged. A faulty configuration is not touched.
 
 `~` stands for the home folder. The three folders must be different. A missing folder is created during processing only if the folder above it exists; otherwise (e.g. drive not connected) the program reports „Ordner nicht erreichbar“ (folder not reachable) instead of creating the folders on the system disk. `rfnegconv config init` creates the folders including missing parent folders.
 
 ### All keys
 
-Every key is optional except the three folders. Types: `path` = text in quotes, `bool` = `true`/`false`, `int`/`float` = number.
+Every key is optional except the three folders (a missing one applies with its default). The switches `dng`, `tiff`, `contact_sheet`, `service` and `update_check` are all `true` in a new configuration. Types: `path` = text in quotes, `bool` = `true`/`false`, `int`/`float` = number.
 
 #### Folders
 
@@ -222,7 +293,9 @@ Every key is optional except the three folders. Types: `path` = text in quotes, 
 | Key | Type | Default | Allowed | Effect |
 |-----|------|---------|---------|--------|
 | `dng` | bool | `true` | `true`, `false` | Write the DNG |
-| `dng_finder_preview` | bool | `false` | `true`, `false` | `false`: float16 DNG with Deflate (smaller), keeps values above the white point and below the black point. `true`: uncompressed uint16 DNG that macOS Finder and Quick Look display (larger), limited to 0–1 |
+| `tiff` | bool | `true` | `true`, `false` | Write the TIFF (the JPEG is always written) |
+| `contact_sheet` | bool | `true` | `true`, `false` | After a run with new pictures, write a [contact sheet](#contact-sheet) into `Fotos/` |
+| `dng_finder_preview` | bool | `false` | `true`, `false` | `false`: float16 DNG with Deflate (smaller), not limited: keeps values above the white point and below the black point. `true`: uncompressed uint16 DNG that macOS Finder and Quick Look display (larger), limited to 0–1. Both contain the gentle correction |
 | `jpeg_quality` | int | `95` | 1–100 | JPEG quality |
 
 #### Orientation
@@ -234,14 +307,16 @@ Every key is optional except the three folders. Types: `path` = text in quotes, 
 
 #### Correction
 
-TIFF and JPEG contain the corrected picture (gentle correction, section 5), the DNG the neutral linear data (float16 without limiting to 0–1, step 4.12).
+All three outputs contain the same gentle correction (section 5); within 0–1 the DNG gives the same values as the TIFF (BW exactly, colour except for pixels with a camera channel outside 0–1). The float16 DNG additionally keeps the values outside 0–1, not limited (step 4.12). Lightroom and Camera Raw put their own default tone curve on top of every DNG they open; there the DNG therefore looks different from TIFF and JPEG.
 
 #### Service and operation
 
 | Key | Type | Default | Allowed | Effect |
 |-----|------|---------|---------|--------|
-| `notify` | bool | `true` | `true`, `false` | Desktop notification after each batch |
-| `parallel_jobs` | int | `0` | ≥ 0 | Files processed at the same time; `0` = automatic: min(CPU cores, ⌊half the RAM / 4 GiB⌋, number of files), at least 1 |
+| `service` | bool | `true` | `true`, `false` | Background service: `true` = set up, `false` = not set up; every run and the installer reconcile it |
+| `update_check` | bool | `true` | `true`, `false` | Look for a new version at most once in 7 days ([Notice of new versions](#notice-of-new-versions)) |
+| `notify` | bool | `true` | `true`, `false` | Desktop notification with the result of each run (not for „Negative entwickeln“, which shows its own window); for the service also self-check problems and a new version |
+| `parallel_jobs` | int | `0` | ≥ 0 | Files processed at the same time; `0` = automatic: min(CPU cores, ⌊half the RAM / 4 GiB⌋, number of files), at least 1. The comment in the file names the automatic value of the computer on which `config init` wrote it |
 | `settle_seconds` | float | `5.0` | > 0 | Watch mode: files must be unchanged this long before a batch starts; also the retry wait (limited to 5–60 s) |
 | `exiftool_path` | path | empty | path to the program | Set: only this program (if the file does not exist, without exiftool). Empty: `exiftool` on the `PATH`, otherwise the installer's copy in the app data folder |
 
@@ -251,11 +326,13 @@ The amount of output is chosen only on the command line (`-Q`, `-v`, `-vv`); a k
 
 Only needed if detection fails on unusual material. Names as in the code (`AnalyzerSettings`, `RollSettings`); the steps are explained in [Processing step by step](#processing-step-by-step).
 
+An update keeps changed values. `rfnegconv config init --negative … --photos … --archive … --expert-reset` sets every expert threshold back to its default; all other keys stay unchanged.
+
 | Key | Type | Default | Allowed | Effect |
 |-----|------|---------|---------|--------|
 | `measure_inset` | float | `0.10` | 0–0.25 | Inner measurement window: share of the crop's height/width left out on each side (0.10 = inner 80 %) |
 | `holder_delta` | float | `1.8` | > 0 | Film mask: density above the clearest base up to which a pixel counts as film |
-| `holder_min` | float | `1.0` | 0.3–`holder_delta` | Translucent holder: minimum density above the clearest base from which a border strip can count as holder (step 4); default min(1.0, holder_delta), at least 0.3 |
+| `holder_min` | float | `1.0` | ≥ 0.3 | Translucent holder: minimum density above the clearest base from which a border strip can count as holder (step 4). Effective is max(0.3, min(`holder_min`, `holder_delta`)): lowering `holder_delta` needs no change of `holder_min` |
 | `gap_delta` | float | `0.10` | > 0 | Strict base pixel (gap between frames): density limit above the base |
 | `gap_std` | float | `0.03` | > 0 | Strict base pixel: limit of the local standard deviation |
 | `loose_delta` | float | `0.15` | > 0 | Loose base pixel (edge trimming): density limit above the base |
@@ -306,13 +383,19 @@ Only needed if detection fails on unusual material. Names as in the code (`Analy
 | `ROLL_MIN_FRAMES`, `ROLL_AGREEMENT` | 3, 0.8 | `core/crossover.py` | Crossover per roll: at least 3 measured colour frames, ≥ 80 % of them on the same side for R and for B |
 | `SAMPLE_MAX_PIXELS` | 87,381 | `core/crossover.py` | Density sample of the inner window per frame (at most 1 MiB) |
 | `PREVIEW_LONG_EDGE` | 1024 | `service/render.py` | Long edge of the preview embedded in the DNG |
-| `MEMORY_PER_WORKER` | 4 GiB | `service/batch.py` | RAM budget per parallel job |
+| `MEMORY_PER_WORKER` | 4 GiB | `system.py` | RAM budget per parallel job |
 | `STALE_TEMP_SECONDS` | 3600 | `service/batch.py` | Leftover temporary files older than 1 h are deleted |
 | `STALE_TEMP_PATTERNS` | `.*.tmp.*`, `*_exiftool_tmp` | `service/batch.py` | Name patterns of these temporary files |
 | `TIMEOUT_SECONDS` | 300 | `fileio/exiftool.py` | Longest run time of one exiftool call |
 | `RESCAN_SECONDS` | 60 | `service/watcher.py` | Watch mode: rescan the folder at least once a minute |
 | `MIN_BACKOFF`, `MAX_BACKOFF` | 5 s, 60 s | `service/watcher.py` | Watch mode: limits of the wait before a retry |
 | `FINDER_BUSY_DAY` | 1984-01-24 (±12 h) | `service/watcher.py` | macOS: creation date the Finder gives a file while copying it |
+| `LOW_SPACE_BYTES` | 2 GiB | `service/selfcheck.py` | Self-check: below this, warning „Wenig Speicherplatz frei“ (little free space) |
+| `CHECK_INTERVAL_SECONDS` | 7 days | `service/update.py` | At most one request for a new version in this interval |
+| `TIMEOUT_SECONDS` | 5 s | `service/update.py` | Longest wait for GitHub's answer |
+| `COLUMNS`, `THUMB_SIZE`, `LABEL_HEIGHT` | 6, 320 × 240 px, 28 px | `service/contact_sheet.py` | Contact sheet: columns, box per thumbnail, room for the file name |
+| `SHEET_MAX_PICTURES` | 300 | `service/contact_sheet.py` | Contact sheet: at most this many pictures per file, beyond that „Teil 1“, „Teil 2“ … (part 1, part 2) |
+| `GAP`, `MARGIN`, `FONT_SIZE`, `QUALITY` | 16 px, 24 px, 14 px, 85 | `service/contact_sheet.py` | Contact sheet: gap, margin, font size (Pillow's default font), JPEG quality |
 
 ## Processing step by step
 
@@ -379,10 +462,10 @@ At full resolution, in parallel; the steps of one file run in this order.
 6. **Orientation.** First mirror horizontally (`mirror`), then rotate clockwise by `rotate`; the crop rectangle follows.
 7. **Black point** (region 3). b = 0.5th percentile of the luminance (mean of the channels, every 4th pixel) in the inner window of the oriented crop. If 0 < b < 0.99: Y = (Y − b) / (1 − b), the same offset for all channels. The values are not limited here: what lies above the white point stays above 1, what lies below the black point below 0 (for the DNG).
 8. **BW.** For BW frames the three channels are averaged into one.
-9. **Colour space** (crop only, for TIFF and JPEG). The values are limited to 0–1 (for BW before averaging the channels), then camera RGB → linear sRGB with the camera matrix (dcraw method: (XYZ → camera) · (sRGB → XYZ, D65), rows normalised so that neutral stays neutral, inverted; unusable matrix → identity matrix and a warning). Negative values become 0.
-10. **sRGB curve** (crop only). Standard sRGB transfer function (IEC 61966-2-1). The result is the neutral sRGB picture.
-11. **Description.** One line, e.g. `rfnegconv 26.10.7 | color | dmin=0.415,0.437,0.908 | fallback=no | crop=1:1 | crossover: R x1.102 B x0.874 (frame+roll) | crop: …` (colour/BW, film base used, roll fallback, snapped format or `uncertain`; crossover with k for R and B and its source `frame+roll`, `frame only`, `roll only` or `none` (no correction), left out with `crossover_limit = 0`; at the end `| crop: …` with the reason for the crop). The log line from `-v` reads `<file>: crop <W>×<H>, crossover R x… B x… (…) — <reason>`. It is written into all three files (`ImageDescription`) and into the log.
-12. **DNG** (if `dng = true`). The *whole* deskewed and oriented picture after steps 3–8 (neutral, linear, camera RGB, black point 0, white point 1; BW as three identical channels), not cut. `dng_finder_preview = false`: float16, Deflate with floating-point predictor, tiles 256 × 256, not limited: highlights above the white point (> 1) and shadows below the black point (< 0) are kept and can be recovered in an image editor (only NaN/infinity are replaced and values limited to the float16 range ±65504; editors may set values below 0 to 0 when opening). `true`: uint16 uncompressed, limited to 0–1 (0–65535, BlackLevel 0, WhiteLevel 65535). The first image of the file is an 8-bit sRGB preview of the neutral cropped picture from the values limited to 0–1 (long edge ≤ 1024 px), the main image follows as a SubIFD. Tags: DNGVersion 1.4.0.0, UniqueCameraModel (make and model via exiftool, otherwise `real-fast-negconv`), ColorMatrix1 = camera matrix, CalibrationIlluminant1 = D65, AsShotNeutral = (1, 1, 1), BaselineExposure = 0, Orientation = 1. The crop travels as embedded Camera Raw XMP (`crs:ProcessVersion 11.0`, `HasCrop`, `CropTop/Left/Bottom/Right` relative 0–1, `CropAngle 0`, `AlreadyApplied False`): in Lightroom or Camera Raw it can be reset or widened up to the full scan.
+9. **Colour space** (crop only, for TIFF and JPEG). Colour: the values are limited to 0–1, then camera RGB → linear sRGB with the camera matrix (dcraw method: (XYZ → camera) · (sRGB → XYZ, D65), rows normalised so that neutral stays neutral, inverted; unusable matrix → identity matrix and a warning). Negative values become 0. BW: the grey value of step 8 (mean of the unlimited channels) goes on without matrix; it is limited only in step 10.
+10. **sRGB curve** (crop only). Values limited to 0–1, then the standard sRGB transfer function (IEC 61966-2-1). The result is the sRGB picture before the gentle correction.
+11. **Description.** One line, e.g. `rfnegconv 26.10.8 | color | dmin=0.415,0.437,0.908 | fallback=no | crop=1:1 | crossover: R x1.102 B x0.874 (frame+roll) | crop: …` (colour/BW, film base used, roll fallback, snapped format or `uncertain`; crossover with k for R and B and its source `frame+roll`, `frame only`, `roll only` or `none` (no correction), left out with `crossover_limit = 0`; at the end `| crop: …` with the reason for the crop). The log line from `-v` reads `<file>: crop <W>×<H>, crossover R x… B x… (…) — <reason>`. It is written into all three files (`ImageDescription`) and into the log.
+12. **DNG** (if `dng = true`). The *whole* deskewed and oriented picture after steps 3–8 (linear, camera RGB, black point 0, white point 1; BW as three identical channels) with the gentle correction (section 5), not cut. **Correction in the DNG:** per pixel the value is converted to linear sRGB with the camera matrix of step 9 (BW: the grey value, without matrix), the part within 0–1 is encoded with the sRGB curve, corrected exactly like the TIFF and linearised again, the part outside 0–1 is added back unchanged (slope 1), and the result is brought back to camera RGB with the inverse matrix. Converted to sRGB with ColorMatrix1 and encoded, the DNG gives the TIFF's values within 0–1: exactly for BW (up to float16 rounding), likewise for colour, except for pixels in which a camera channel lies outside 0–1 – the TIFF limits the camera values before the colour matrix, the DNG keeps them. On real frames the mean difference within 0–1 is below 0.0001 on the 0–1 scale. Outside 0–1 the curve continues with slope 1, not limited: highlights above the white point and shadows below the black point stay unchanged and available for later editing. At the ends 0 and 1 the curve is continuous, its slope there is 1 − contrast. **Formats:** `dng_finder_preview = false` (default): float16, not limited, Deflate with floating-point predictor, tiles 256 × 256 (only NaN/infinity are replaced and values limited to the float16 range ±65504; editors may set values below 0 to 0 when opening). `true`: uint16 uncompressed, limited to 0–1 (0–65535, BlackLevel 0, WhiteLevel 65535), so that Finder and Quick Look display it. The first image of the file is an 8-bit sRGB preview of the corrected, cropped picture (the same picture as the TIFF, long edge ≤ 1024 px), the main image follows as a SubIFD. Tags: DNGVersion 1.4.0.0, UniqueCameraModel (make and model via exiftool, otherwise `real-fast-negconv`), ColorMatrix1 = camera matrix, CalibrationIlluminant1 = D65, AsShotNeutral = (1, 1, 1), BaselineExposure = 0, Orientation = 1. The crop travels as embedded Camera Raw XMP (`crs:ProcessVersion 11.0`, `HasCrop`, `CropTop/Left/Bottom/Right` relative 0–1, `CropAngle 0`, `AlreadyApplied False`): in Lightroom or Camera Raw it can be reset or widened up to the full scan. Lightroom and Camera Raw put their own default tone curve on top of every DNG they open.
 13. **TIFF.** The cropped sRGB picture with the gentle correction (section 5). 16 bit, Deflate with predictor; colour as RGB with embedded sRGB profile, BW as one grey channel.
 14. **JPEG.** The same corrected picture as the TIFF, only compressed (no second computation). 8 bit, quality `jpeg_quality` (95); colour with sRGB profile, BW as greyscale.
 15. **EXIF.** If exiftool is available, all metadata of the RAW is copied into every output (`-TagsFromFile … -all:all`), except MakerNotes, Orientation, ImageDescription, Software, ImageWidth/ImageHeight, Camera Raw settings (`XMP-crs`) and the DNG-specific colour, rendering and raw-data tags (`DNG_TAGS` in `fileio/exiftool.py`), so that a DNG used as input never writes its camera matrix, profile, calibration, black/white levels or crop into our DNG: DNGVersion, DNGBackwardVersion, DNGPrivateData, DNGAdobeData, UniqueCameraModel, LocalizedCameraModel, ColorMatrix1, ColorMatrix2, ColorMatrix3, CameraCalibration1, CameraCalibration2, CameraCalibration3, CameraCalibrationSig, ReductionMatrix1, ReductionMatrix2, ReductionMatrix3, ForwardMatrix1, ForwardMatrix2, ForwardMatrix3, CalibrationIlluminant1, CalibrationIlluminant2, CalibrationIlluminant3, IlluminantData1, IlluminantData2, IlluminantData3, AnalogBalance, AsShotNeutral, AsShotWhiteXY, AsShotICCProfile, AsShotPreProfileMatrix, AsShotProfileName, BaselineExposure, BaselineExposureOffset, BaselineNoise, BaselineSharpness, LinearResponseLimit, DefaultBlackRender, NoiseProfile, ProfileName, ProfileCopyright, ProfileEmbedPolicy, ProfileCalibrationSig, ProfileDynamicRange, ProfileGroupName, ProfileType, ProfileGainTableMap, ProfileGainTableMap2, ProfileHueSatMapDims, ProfileHueSatMapData1, ProfileHueSatMapData2, ProfileHueSatMapData3, ProfileHueSatMapEncoding, ProfileLookTableDims, ProfileLookTableData, ProfileLookTableEncoding, ProfileToneCurve, RawToPreviewGain, MakerNoteSafety, OpcodeList1, OpcodeList2, OpcodeList3, ActiveArea, MaskedAreas, BlackLevel, BlackLevelRepeatDim, BlackLevelDeltaH, BlackLevelDeltaV, WhiteLevel, LinearizationTable, ShadowScale, BayerGreenSplit, AntiAliasStrength, ChromaBlurRadius, BestQualityScale, DefaultScale, DefaultCropOrigin, DefaultCropSize, DefaultUserCrop, ColumnInterleaveFactor, RowInterleaveFactor, RawImageDigest, NewRawImageDigest, OriginalRawFileData, OriginalRawFileDigest, RawImageSegmentation, ColorimetricReference, CacheVersion, EnhanceParams, DepthFormat, DepthNear, DepthFar, DepthUnits, DepthMeasureType, SemanticName, SemanticInstanceID, JXLDistance, JXLEffort, JXLDecodeSpeed; thumbnails and previews of the RAW are not copied, Orientation is set to 1. A failure here only gives a warning.
@@ -394,7 +477,7 @@ After the batch: log summary, console output `N converted, M failed` (exit code 
 
 ### 5. Gentle correction in detail
 
-Contained in TIFF and JPEG, identically in both (a picture is corrected once and written twice); the DNG stays neutral. In the code it is called "look" (`core/look.py`). It never changes the brightness: no brightening or darkening, no exposure correction. It only corrects what film, scan and inversion make flat: contrast and, for pale colour pictures, saturation.
+Contained in TIFF and JPEG, identically in both (a picture is corrected once and written twice), and in the DNG (step 4.12: the same correction on the linear data, values outside 0–1 are kept). In the code it is called "look" (`core/look.py`). It never changes the brightness: no brightening or darkening, no exposure correction. It only corrects what film, scan and inversion make flat: contrast and, for pale colour pictures, saturation.
 
 **Inputs.** Two measurements per picture, taken on the neutral sRGB preview of the crop (after crossover, black point, camera matrix and sRGB curve; step 2.17, or step 3.4 with a re-measured k) in the inner window (`measure_inset`), every 4th pixel (`SAMPLE_STEP`), values clipped to 0–1:
 
@@ -415,7 +498,7 @@ Contained in TIFF and JPEG, identically in both (a picture is corrected once and
 
 Finally all values are clipped to 0–1. The S-curve leaves 0, 0.5 and 1 unchanged; it deepens shadows and lifts highlights slightly while the midtone stays. The saturation acts fully only on pale pixels (small c); vivid ones keep their colour.
 
-**What it never does:** no exposure change, no brightening of dark or darkening of bright shots, no hue change, no effect on the DNG and no dependency on the output format. The normalisation to the white and black point per frame (steps 4.4 and 4.7) is not part of the gentle correction but of the inversion; it applies to the DNG as well.
+**What it never does:** no exposure change, no brightening of dark or darkening of bright shots, no hue change and no dependency on the output format (TIFF, JPEG and DNG get the same correction). The normalisation to the white and black point per frame (steps 4.4 and 4.7) is not part of the gentle correction but of the inversion; it applies to the DNG as well.
 
 **Effect on example pictures** (described only by their measurements; numbers from the formulas above):
 
@@ -431,7 +514,7 @@ With s = 0.20 the grey value 0.25 becomes 0.231 and 0.75 becomes 0.769, 0.50 sta
 
 ### What the program does not do
 
-- No AI, no trained models, no cloud or network access.
+- No AI, no trained models, no cloud. The only network access is the question for a new version (`update_check`, can be switched off).
 - No automatic upright detection: `rotate`/`mirror` apply to all files alike (one value per scanning setup).
 - No dust, scratch or noise removal. Without an infrared channel (as on flatbed scanners with ICE), dust cannot be told apart reliably from picture details such as light reflections or stars, and grain is part of the film. Image editors in which the result can be checked are suited for this. Tip: dust off the negatives before photographing them and expose the scan so that the film base does not get too dark (underexposed scans show noticeably more noise after inversion).
 - No sharpening.
@@ -444,17 +527,23 @@ With s = 0.20 the grey value 0.25 becomes 0.231 and 0.75 becomes 0.769, 0.50 sta
 
 ## Outputs
 
-Per RAW `<name>.<ext>` three files appear in `Fotos/` (without DNG with `dng = false`):
+Per RAW `<name>.<ext>` three files appear in `Fotos/` (without DNG with `dng = false`, without TIFF with `tiff = false`; the JPEG always):
 
 | File | Content | Crop | Colour | Correction | Size per megapixel |
 |------|---------|------|--------|------------|--------------------|
-| `<name>.dng` | linear, float16 Deflate not limited to 0–1 (or uint16 uncompressed, 0–1), embedded preview | full scan, crop as resettable setting | camera RGB with colour matrix | neutral | about 3.6 MB (uint16: about 6.1 MB) |
+| `<name>.dng` | linear, float16 Deflate not limited to 0–1 (or uint16 uncompressed, 0–1), embedded preview | full scan, crop as resettable setting | camera RGB with colour matrix | gentle, like the TIFF; float16: values outside 0–1 kept, not limited | about 3.6 MB (uint16: about 6.1 MB) |
 | `<name>.tif` | 16 bit, sRGB curve, Deflate | cut | sRGB (BW: grey) | gentle (section 5) | about 3.3 MB |
 | `<name>.jpg` | 8 bit, quality 95 | cut | sRGB (BW: grey) | gentle, same as the TIFF | about 0.2–0.4 MB |
 
 Sizes grow with the pixel count and depend on the picture content (grain and noise enlarge TIFF and JPEG); the table gives rough values per megapixel. The three files of a RAW always share the same name. If `<name>.dng`, `.tif` or `.jpg` already exists in `Fotos/` (or two RAWs in a batch have the same name), `<name>_2`, `<name>_3` … is used for all three. Nothing is overwritten.
 
-**Why this crop?** Every frame states the reason for its crop and rotation, in the log and in the files. With `-v` the console shows one line per file, the log file always has it (INFO):
+### Contact sheet
+
+With `contact_sheet = true` every run that produced new pictures (also a batch of the service) writes an overview into `Fotos/`: `_Kontaktabzug JJJJ-MM-TT HH-MM.jpg` (YYYY-MM-DD HH-MM, local time at the end of the run; if the name exists, `_2`, `_3` …). It shows all JPEGs of this run as thumbnails with their file name below: fixed grid with 6 columns, sorted by file name, each picture fitted into a box of 320 × 240 pixels, the font is Pillow's built-in default font (the same on every system), long names are shortened with „…“. The file is first written under a temporary name and renamed only when complete. If a run has more than 300 pictures, several contact sheets of at most 300 pictures each are written in name order: `_Kontaktabzug JJJJ-MM-TT HH-MM Teil 1.jpg` (part 1), `… Teil 2.jpg` and so on. A contact sheet appears in no later contact sheet. If it cannot be written, the log says so; the pictures of the run are not affected.
+
+### Why this crop?
+
+Every frame states the reason for its crop and rotation, in the log and in the files. With `-v` the console shows one line per file, the log file always has it (INFO):
 
 ```
 scan_0001.ARW: crop 6178×6178 — rotated 0.54° (frame edges); snapped to 1:1; width: left edge + right edge anchored, excess 4.3 % of the width taken from the left
@@ -472,7 +561,7 @@ The size is the output size in pixels. The reason lists, in this order and only 
 | `rfnegconv service install` | Install and start the background service |
 | `rfnegconv service status` | Show whether the service is installed and running, both log files and which exiftool is used |
 | `rfnegconv service uninstall` | Remove the background service |
-| `rfnegconv config init --negative PATH --photos PATH --archive PATH` | Write a configuration with these folders only if none exists yet; create the configured folders; prints `config=`, `status=created\|kept`, `negative=`, `photos=`, `archive=` |
+| `rfnegconv config init --negative PATH --photos PATH --archive PATH [--off SWITCH]… [--expert-reset]` | Write the complete configuration with these folders; an existing one keeps its folders and values and only gets missing keys. `--off` (repeatable) sets `dng`, `tiff`, `contact_sheet`, `service` or `update_check` to `false`; `--expert-reset` sets every [expert threshold](#expert-thresholds) to its default. Creates the configured folders; prints `config=`, `status=created\|completed\|kept` (newly written, completed, unchanged), `negative=`, `photos=`, `archive=` and per switch `<switch>=true\|false` |
 | `--config PATH` | Config file path |
 | `-Q`, `--silent` | No console output (the log file is still written) |
 | `-v`, `--verbose` | More output (per file the crop size and the reason for the crop) |
@@ -484,9 +573,9 @@ The size is the output size in pixels. The reason lists, in this order and only 
 | `run --photos PATH` | Output folder (overrides `photos_dir`) |
 | `run --dng` / `--no-dng` | Overrides `dng` |
 | `run --dng-finder-preview` / `--no-dng-finder-preview` | Overrides `dng_finder_preview` |
-| `run --summary` | For launchers: prints only the line `processed=<n> failed=<m> busy=<0\|1>` (processed, failed, folder busy); no desktop notification. If files stayed in `Negative/` because of the environment (e.g. storage full), `Error: <reason>` with exit code 1 instead |
+| `run --summary` | For launchers: prints the line `processed=<n> failed=<m> busy=<0\|1>` (processed, failed, folder busy), before it only when needed one `check=<text>` per self-check problem and `update=<version>` for a new version; no desktop notification. If files stayed in `Negative/` because of the environment (e.g. storage full), `Error: <reason>` with exit code 1 instead of the line |
 
-Global options (`--config`, `-Q`, `-v`, `-vv`) come before the command, e.g. `rfnegconv -v run --photos ~/Film/Fotos --no-dng`. Exit codes: 0 = everything done (also when the folder was busy), 1 = at least one file failed or a configuration or folder error. With `run --summary` the result is in the line; the exit code is then 1 only for an error before processing (e.g. configuration, folder not reachable) or for files that stayed in `Negative/` because of the environment. Operating system errors always appear as one line `Error: …`, never as a Python traceback.
+Every run (`run`, no command) first reconciles the background service with the switch `service`, checks itself quietly (problems as lines of their own, not with `-Q`; if a folder cannot be used, `Error: …` and no run) and prints a line `New version X available: https://github.com/jcmx9/real-fast-negconv#update` for a new version. Global options (`--config`, `-Q`, `-v`, `-vv`) come before the command, e.g. `rfnegconv -v run --photos ~/Film/Fotos --no-dng`. Exit codes: 0 = everything done (also when the folder was busy), 1 = at least one file failed or a configuration or folder error. With `run --summary` the result is in the line; the exit code is then 1 only for an error before processing (e.g. configuration, folder not reachable) or for files that stayed in `Negative/` because of the environment. Operating system errors always appear as one line `Error: …`, never as a Python traceback.
 
 ## Supported cameras and formats
 
@@ -537,7 +626,7 @@ The test suite is maintained separately and is not published; this repository co
 
 ## Versioning
 
-This project uses [CalVer](https://calver.org/) in the format `YY.M.MICRO` (e.g. `26.10.7`); development versions carry `.devN`. Releases are made with [bump-my-version](https://github.com/callowayproject/bump-my-version) and `scripts/release.sh`.
+This project uses [CalVer](https://calver.org/) in the format `YY.M.MICRO` (e.g. `26.10.8`); development versions carry `.devN`. Releases are made with [bump-my-version](https://github.com/callowayproject/bump-my-version) and `scripts/release.sh`.
 
 ## Contributing
 

@@ -6,11 +6,15 @@
 #
 # Besides the background service it creates the Start menu entry "Negative
 # entwickeln" that processes the Negative folder once and shows the result.
-# -OhneDienst installs no service (an existing one is removed); a run without
-# it installs the service again.
 #
-# Running it again updates the program. Existing config, folders and images
-# are never changed or deleted. No admin rights needed.
+# Options -OhneDng, -OhneTiff, -OhneKontaktabzug and -OhneDienst set the
+# switch of the same meaning in the config to false. A run without an option
+# leaves that switch as it is in the config. The background service follows
+# the switch "service" (installed when true, removed when false).
+#
+# Running it again updates the program. The config only gets missing keys
+# (and the switches named as options); folders and images are never changed
+# or deleted. No admin rights needed.
 #
 # Environment (tests/CI):
 #   RFNEGCONV_SOURCE        local path or uv source spec instead of the release
@@ -26,6 +30,9 @@
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
+    [switch]$OhneDng,
+    [switch]$OhneTiff,
+    [switch]$OhneKontaktabzug,
     [switch]$OhneDienst
 )
 
@@ -35,7 +42,7 @@ $script:CallerProgress = $ProgressPreference
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is very slow with progress in 5.1
 
-$script:Version = '26.10.7'
+$script:Version = '26.10.8'
 $script:AppName = 'real-fast-negconv'
 $script:RepoUrl = 'https://github.com/jcmx9/real-fast-negconv'
 $script:RawUrl = 'https://raw.githubusercontent.com/jcmx9/real-fast-negconv'
@@ -58,7 +65,11 @@ $script:ExifToolDir = $null
 $script:ExifToolExe = $null
 $script:Uv = $null
 $script:Folders = @{}
-$script:WithoutService = [bool]$OhneDienst
+$script:OffSwitches = @()
+if ($OhneDng) { $script:OffSwitches += 'dng' }
+if ($OhneTiff) { $script:OffSwitches += 'tiff' }
+if ($OhneKontaktabzug) { $script:OffSwitches += 'contact_sheet' }
+if ($OhneDienst) { $script:OffSwitches += 'service' }
 $script:LauncherName = 'Negative entwickeln'
 $script:LauncherPlace = ''
 $script:ServiceRemoved = $false
@@ -438,11 +449,13 @@ function Initialize-Folder {
         Write-Verbose "console encoding unchanged: $_"  # e.g. no console attached
     }
     try {
-        $result = Invoke-Tool -FilePath (Find-App) -Capture -ArgumentList @(
+        $arguments = @(
             'config', 'init',
             '--negative', (Join-Path -Path $base -ChildPath 'Negative'),
             '--photos', (Join-Path -Path $base -ChildPath 'Fotos'),
             '--archive', (Join-Path -Path $base -ChildPath 'Archiv'))
+        foreach ($switch in $script:OffSwitches) { $arguments += @('--off', $switch) }
+        $result = Invoke-Tool -FilePath (Find-App) -Capture -ArgumentList $arguments
     }
     finally {
         if ($null -ne $previousEncoding) {
@@ -462,6 +475,9 @@ function Initialize-Folder {
     if ($script:Folders['status'] -eq 'kept') {
         Write-Info "$script:Check Vorhandene Einstellungen $($script:ue)bernommen."
     }
+    elseif ($script:Folders['status'] -eq 'completed') {
+        Write-Info "$script:Check Konfiguration angepasst: $($script:Folders['config'])"
+    }
     else {
         Write-Info "$script:Check Ordner angelegt."
     }
@@ -469,7 +485,9 @@ function Initialize-Folder {
 }
 
 function Register-Service {
-    if ($script:WithoutService) {
+    # the service follows the switch "service" in the config; it is removed
+    # only when config init reports service=false explicitly
+    if ($script:Folders['service'] -eq 'false') {
         $script:ServiceRemoved = Unregister-Service
         return $false
     }
@@ -488,7 +506,7 @@ function Register-Service {
 }
 
 function Unregister-Service {
-    # -OhneDienst: an installed service is removed
+    # service = false: an installed service is removed
     if ($env:RFNEGCONV_NO_SERVICE -eq '1') {
         Write-Info "(Test) Hintergrunddienst $($script:ue)bersprungen - w$($script:ue)rde ausf$($script:ue)hren: rfnegconv service uninstall"
         return $true
@@ -569,7 +587,8 @@ $script:LauncherVbs = @'
 Option Explicit
 Const Title = "Negative entwickeln"
 Dim shell, fso, env, exe, outFile, errFile, q, command, output, entry, summary, detail
-Dim processed, failed, photos, text
+Dim processed, failed, photos, text, checks, version
+Const UpdateUrl = "https://github.com/jcmx9/real-fast-negconv#update"
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 q = Chr(34)
@@ -616,9 +635,14 @@ End Function
 
 summary = ""
 detail = ""
+checks = ""
+version = ""
 For Each entry In Split(Replace(output, vbCr, ""), vbLf)
     If Left(entry, 10) = "processed=" Then summary = entry
     If Left(entry, 7) = "Error: " And detail = "" Then detail = Mid(entry, 8)
+    ' self-check findings (only problems), one line each
+    If Left(entry, 6) = "check=" Then checks = checks & vbCrLf & Mid(entry, 7)
+    If Left(entry, 7) = "update=" And version = "" Then version = Mid(entry, 8)
 Next
 
 Function Field(line, name)
@@ -648,7 +672,17 @@ Else
         text = "Keine neuen Negative gefunden."
     End If
 End If
-MsgBox text, vbOKOnly + vbInformation + vbSystemModal, Title
+If checks <> "" Then text = text & vbCrLf & checks
+If version = "" Then
+    MsgBox text, vbOKOnly + vbInformation + vbSystemModal, Title
+Else
+    ' MsgBox has fixed button labels: "Ja" opens the Update section of the project page
+    text = text & vbCrLf & vbCrLf & "Neue Version " & version & " verf" & ChrW(252) & "gbar " & ChrW(8211) & _
+        " siehe Update-Abschnitt auf der Projektseite." & vbCrLf & vbCrLf & "Projektseite " & ChrW(246) & "ffnen?"
+    If MsgBox(text, vbYesNo + vbInformation + vbSystemModal + vbDefaultButton2, Title) = vbYes Then
+        shell.Run UpdateUrl, 1, False
+    End If
+End If
 '@
 
 function Get-StartMenuDir {
@@ -736,19 +770,15 @@ function Show-Summary {
     }
     $launcher = "Programm $($script:lq)$($script:LauncherName)$($script:rq)"
     if ($script:LauncherPlace) { $launcher += " (im $($script:LauncherPlace))" }
-    if ($script:WithoutService -and $script:ServiceRemoved) {
+    if ($script:ServiceRemoved) {
         Write-Info "Ohne Hintergrunddienst: Die Umwandlung startet nur $($script:ue)ber das $launcher."
     }
     else {
         Write-Info "Dateien im Ordner $($script:lq)Negative$($script:rq) werden automatisch umgewandelt."
         if ($script:LauncherPlace) { Write-Info "Sofort umwandeln: $launcher." }
     }
-    if ($script:WithoutService) {
-        Write-Info 'Aktualisieren: powershell -ExecutionPolicy ByPass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1))) -OhneDienst"'
-    }
-    else {
-        Write-Info "Aktualisieren: denselben Befehl noch einmal ausf$($script:ue)hren."
-    }
+    Write-Info 'Aktualisieren: powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1 | iex"'
+    Write-Info '               (die Schalter in den Einstellungen bleiben dabei, wie sie sind)'
     Write-Info "Wird $($script:lq)rfnegconv$($script:rq) in PowerShell nicht gefunden: ein neues Fenster $($script:oe)ffnen."
     Write-Info 'Entfernen:     powershell -ExecutionPolicy ByPass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jcmx9/real-fast-negconv/main/install.ps1))) -Uninstall"'
 }
@@ -779,7 +809,7 @@ function Install-Everything {
         Add-DesktopShortcut
         Add-Launcher
     }
-    # -OhneDienst: the watcher stopped for the update stays stopped once the
+    # service = false: the watcher stopped for the update stays stopped once the
     # service is removed; if removal failed it runs again (Restore-Watcher)
     if ($watcherStopped -and -not $serviceStarted -and -not $serviceRemoved) { Restore-Watcher }
     Install-ExifTool  # optional and online: last, so an abort here loses nothing else

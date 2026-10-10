@@ -211,24 +211,37 @@ def _start_observer(
     return None
 
 
+def _backoff(settle_seconds: float) -> float:
+    """Wait before a new attempt: settle_seconds, limited to 5-60 s."""
+    return min(MAX_BACKOFF, max(MIN_BACKOFF, settle_seconds))
+
+
 def watch(
     cfg: Config,
     *,
     stop: threading.Event | None = None,
     on_batch: Callable[[BatchResult], None] | None = None,
     on_problem: Callable[[str], None] | None = None,
+    before_batch: Callable[[], None] | None = None,
+    after_batch: Callable[[], None] | None = None,
+    current_config: Callable[[], Config] | None = None,
 ) -> None:
     """Run until `stop` is set (or Ctrl+C); one batch per quiet period.
 
     `on_batch` gets every batch result except a repeat of the previous
     batch's problem without any success (one notice per condition);
     `on_problem` gets a plain message once when a folder becomes unusable.
+    `before_batch` runs right before each batch (self-check), `after_batch`
+    after each batch that was not skipped as busy. `current_config` gives
+    the config for each batch and each wait (re-read by the caller): its
+    switches and `settle_seconds` apply from the next wait or batch on; the
+    folders watched stay those of `cfg`.
     """
     negative, _, _ = cfg.require_dirs()
     stop = stop or threading.Event()
     wake = threading.Event()
     wake.set()  # process files that are already waiting
-    backoff = min(MAX_BACKOFF, max(MIN_BACKOFF, cfg.settle_seconds))
+    backoff = _backoff(cfg.settle_seconds)
     reported = _Reported(on_problem)
     observer = _start_observer(negative, wake, stop, backoff, reported)
     if observer is None:
@@ -244,18 +257,25 @@ def watch(
                 continue
             wake.clear()
             last_scan = time.monotonic()
+            settle = (
+                cfg if current_config is None else current_config()
+            ).settle_seconds
+            backoff = _backoff(settle)
             try:
-                files = stuck.filter(
-                    wait_until_stable(snapshot, cfg.settle_seconds, stop=stop)
-                )
+                files = stuck.filter(wait_until_stable(snapshot, settle, stop=stop))
                 if not files:
                     continue
-                result = run_batch(cfg, files)
+                if before_batch is not None:
+                    before_batch()
+                batch_cfg = cfg if current_config is None else current_config()
+                result = run_batch(batch_cfg, files)
                 if result.busy:
                     log.info("Folder busy (another run); retrying in %.0f s", backoff)
                     stop.wait(backoff)
                     wake.set()
                     continue
+                if after_batch is not None:
+                    after_batch()
                 stuck.remember(result)
                 if result.problem is None:
                     reported.clear()

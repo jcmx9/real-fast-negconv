@@ -48,6 +48,10 @@ class Config(BaseModel):
     archive_dir: Path | None = None
     photos_dir: Path | None = None
     dng: bool = True
+    tiff: bool = True
+    contact_sheet: bool = True
+    service: bool = True
+    update_check: bool = True
     dng_finder_preview: bool = False
     rotate: Rotation = 0
     mirror: bool = False
@@ -86,20 +90,27 @@ class Config(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _holder_min_up_to_holder_delta(self) -> "Config":
+    def _derive_holder_min(self) -> "Config":
         """Default holder_min is max(0.3, min(1.0, holder_delta)).
 
         The derived value is not marked as set (it is re-derived after a
-        merge); only a holder_min set by the user may exceed holder_delta.
+        merge). A holder_min set by the user is kept as written; the
+        analysis uses `effective_holder_min`.
         """
         if "holder_min" not in self.model_fields_set:
             derived = max(
                 HOLDER_MIN_FLOOR, min(_ANALYZER.holder_min, self.holder_delta)
             )
             self.__dict__["holder_min"] = derived  # bypasses model_fields_set
-        elif self.holder_min > self.holder_delta:
-            raise ValueError("holder_min must not exceed holder_delta")
         return self
+
+    @property
+    def effective_holder_min(self) -> float:
+        """holder_min as used: at most holder_delta, at least 0.3.
+
+        A lowered holder_delta therefore never needs a lowered holder_min.
+        """
+        return max(HOLDER_MIN_FLOOR, min(self.holder_min, self.holder_delta))
 
     def merge_overrides(self, overrides: dict[str, Any]) -> "Config":
         """Return a copy with all non-None overrides applied."""
@@ -108,7 +119,7 @@ class Config(BaseModel):
             data: dict[str, Any] = self.model_dump(exclude_unset=True) | filtered
             return Config.model_validate(data)
         except ValidationError as exc:
-            raise ConfigError(_format_errors(exc)) from exc
+            raise ConfigError(format_errors(exc)) from exc
 
     def require_dirs(self) -> tuple[Path, Path, Path]:
         """Resolved (negative, archive, photos); all set and pairwise different."""
@@ -128,7 +139,7 @@ class Config(BaseModel):
     def analyzer_settings(self) -> AnalyzerSettings:
         return AnalyzerSettings(
             holder_delta=self.holder_delta,
-            holder_min=self.holder_min,
+            holder_min=self.effective_holder_min,
             gap_delta=self.gap_delta,
             gap_std=self.gap_std,
             loose_delta=self.loose_delta,
@@ -170,10 +181,11 @@ def load_config(path: Path) -> Config:
     try:
         return Config.model_validate(data)
     except ValidationError as exc:
-        raise ConfigError(f"invalid config in {path}: {_format_errors(exc)}") from exc
+        raise ConfigError(f"invalid config in {path}: {format_errors(exc)}") from exc
 
 
-def _format_errors(exc: ValidationError) -> str:
+def format_errors(exc: ValidationError) -> str:
+    """Pydantic errors as one readable line: `key: message; ...`."""
     return "; ".join(
         f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
         for err in exc.errors()

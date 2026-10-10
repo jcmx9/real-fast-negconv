@@ -70,3 +70,19 @@ def srgb_encode(linear: FloatImage, *, inplace: bool = False) -> FloatImage:
     out -= np.float32(0.055)
     out[low] = low_values
     return out
+
+
+def srgb_decode(encoded: FloatImage, *, inplace: bool = False) -> FloatImage:
+    """Inverse of `srgb_encode` for values in [0, 1] (sRGB EOTF)."""
+    if inplace and encoded.dtype == np.float32:
+        out = encoded
+    else:
+        out = encoded.astype(np.float32)
+    low = out <= np.float32(0.04045)
+    low_values = out[low] / np.float32(12.92)
+    out += np.float32(0.055)
+    out /= np.float32(1.055)
+    np.maximum(out, np.float32(0.0), out=out)
+    np.power(out, np.float32(2.4), out=out)
+    out[low] = low_values
+    return out

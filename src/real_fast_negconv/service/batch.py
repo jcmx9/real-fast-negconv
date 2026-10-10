@@ -30,13 +30,13 @@ from real_fast_negconv.fileio import raw_loader
 from real_fast_negconv.fileio.atomic import TEMP_MARKER
 from real_fast_negconv.fileio.exiftool import ExifTool
 from real_fast_negconv.fileio.lock import folder_lock
+from real_fast_negconv.service.contact_sheet import write_contact_sheet
 from real_fast_negconv.service.render import OutputPaths, assign_outputs, render
+from real_fast_negconv.system import automatic_workers
 
 log = logging.getLogger(__name__)
 
 ERROR_DIR = "_Fehler"
-GIB = 1024**3
-MEMORY_PER_WORKER = 4 * GIB
 STALE_TEMP_SECONDS = 3600.0
 # leftovers of interrupted writes: ours (atomic_write, archive copy) and
 # exiftool's -overwrite_original
@@ -64,6 +64,7 @@ class BatchResult:
     because the cause was not the file itself (disk full, permissions, memory),
     `problem` the plain German reason of the first of them and `stopped`
     whether a full disk ended the batch early (the rest stays untouched).
+    `jpegs` are the JPEGs this batch wrote, `contact_sheets` its contact sheet(s).
     """
 
     succeeded: list[Path] = field(default_factory=list)
@@ -72,6 +73,8 @@ class BatchResult:
     kept: list[Path] = field(default_factory=list)
     problem: str | None = None
     stopped: bool = False
+    jpegs: list[Path] = field(default_factory=list)
+    contact_sheets: list[Path] = field(default_factory=list)
 
 
 def problem_message(result: BatchResult) -> str | None:
@@ -315,52 +318,11 @@ def _remove_file(path: Path) -> None:
             raise
 
 
-def total_memory_bytes() -> int:
-    """Physical memory, or 8 GiB when the OS does not tell us."""
-    if sys.platform == "win32":
-        return _windows_total_memory() or 8 * GIB
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except (AttributeError, ValueError, OSError):
-        return 8 * GIB
-
-
-def _windows_total_memory() -> int | None:
-    """Total physical memory via GlobalMemoryStatusEx, None on failure."""
-    if sys.platform != "win32":
-        return None
-    import ctypes
-    from ctypes import wintypes
-
-    class MemoryStatusEx(ctypes.Structure):
-        _fields_ = (
-            ("dwLength", wintypes.DWORD),
-            ("dwMemoryLoad", wintypes.DWORD),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        )
-
-    status = MemoryStatusEx()
-    status.dwLength = ctypes.sizeof(MemoryStatusEx)
-    try:
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return None
-    except (AttributeError, OSError):
-        return None
-    return int(status.ullTotalPhys)
-
-
 def worker_count(requested: int, n_files: int) -> int:
     """Explicit request, else min(CPUs, half the RAM / 4 GiB, files)."""
     if requested > 0:
         return max(1, min(requested, n_files))
-    by_memory = max(1, int(total_memory_bytes() * 0.5 // MEMORY_PER_WORKER))
-    return max(1, min(os.cpu_count() or 1, by_memory, n_files))
+    return max(1, min(automatic_workers(), n_files))
 
 
 def run_batch(cfg: Config, files: Sequence[Path] | None = None) -> BatchResult:
@@ -394,7 +356,13 @@ def run_batch(cfg: Config, files: Sequence[Path] | None = None) -> BatchResult:
             )
         except OSError as exc:
             raise folder_error(negative, exc) from exc
-        return _run_locked(cfg, negative, archive, photos, todo)
+        result = _run_locked(cfg, negative, archive, photos, todo)
+        if cfg.contact_sheet and result.jpegs:
+            try:
+                write_contact_sheet(result.jpegs, photos, written=result.contact_sheets)
+            except Exception:  # the pictures are done; the sheet is an extra
+                log.warning("Contact sheet could not be written", exc_info=True)
+        return result
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -444,7 +412,7 @@ def _run_locked(
     outputs = dict(
         zip(
             ordered,
-            assign_outputs([p.stem for p in ordered], photos, cfg.dng),
+            assign_outputs([p.stem for p in ordered], photos, cfg.dng, cfg.tiff),
             strict=True,
         )
     )
@@ -471,6 +439,7 @@ def _run_locked(
                 stop.set()
         elif rendered is not None:
             result.succeeded.append(path)
+            result.jpegs.append(outputs[path].jpeg)
             log.info("OK %s - %s", path.name, rendered.split(CROP_REASON_MARKER)[0])
     return _finish_log(result)
 

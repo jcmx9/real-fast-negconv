@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 LABEL = "io.github.jcmx9.rfnegconv"
 UNIT_NAME = "rfnegconv.service"
 STARTUP_SCRIPT = "rfnegconv.vbs"
+NO_SERVICE_ENV = "RFNEGCONV_NO_SERVICE"  # installer tests: never change the service
 
 type Runner = Callable[..., subprocess.CompletedProcess[Any]]
 
@@ -29,6 +30,12 @@ type Runner = Callable[..., subprocess.CompletedProcess[Any]]
 def _dry_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
     """Stand-in runner for RFNEGCONV_HOME runs: report, never execute."""
     typer.echo(f"[{paths.HOME_ENV}] would run: {shlex.join(command)}")
+    return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+
+def _quiet_dry_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+    """Dry run for automatic changes: only logged, never printed or executed."""
+    log.info("[%s] would run: %s", paths.HOME_ENV, shlex.join(command))
     return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
 
 
@@ -203,6 +210,43 @@ def uninstall(
     except OSError as exc:
         raise ServiceError(f"service removal failed: {exc}") from exc
     raise ServiceError(f"unsupported platform: {platform}")
+
+
+def installed(*, platform: str = sys.platform, home: Path | None = None) -> bool:
+    """True if the service file for this platform exists."""
+    if platform == "darwin":
+        return _plist_path(home).exists()
+    if platform == "win32":
+        return _startup_path(home).exists()
+    return _unit_path(home).exists()
+
+
+def reconcile(
+    want: bool,
+    *,
+    log_dir: Path,
+    platform: str = sys.platform,
+    home: Path | None = None,
+    runner: Runner | None = None,
+) -> str | None:
+    """Make the service follow the switch; returns what was done, or None.
+
+    want and not installed: install and start; not want and installed:
+    remove. In an isolated RFNEGCONV_HOME run nothing is executed (the
+    commands are only logged); with RFNEGCONV_NO_SERVICE=1 (installer tests)
+    nothing is changed at all.
+    """
+    if os.environ.get(NO_SERVICE_ENV) == "1":
+        log.info("%s=1: background service left as it is", NO_SERVICE_ENV)
+        return None
+    if runner is None and paths.dev_home() is not None:
+        runner = _quiet_dry_run
+    have = installed(platform=platform, home=home)
+    if want and not have:
+        return install(log_dir=log_dir, platform=platform, home=home, runner=runner)
+    if not want and have:
+        return uninstall(platform=platform, home=home, runner=runner)
+    return None
 
 
 def status(
