@@ -16,6 +16,7 @@ PREDICTOR_FLOATINGPOINT_X2 = 34894
 ILLUMINANT_D65 = 21
 RATIONAL_DENOMINATOR = 10000
 UINT16_MAX = 65535.0
+FLOAT16_MAX = 65504.0
 CHUNK_ROWS = 256
 
 type DngTag = tuple[int, str, int, object, bool]
@@ -32,12 +33,15 @@ def write_dng(
     preview: npt.NDArray[np.uint8],
     integer: bool = False,
 ) -> None:
-    """Write `linear` (H, W, 3, white = 1.0) as DNG with an 8-bit preview in IFD0.
+    """Write `linear` (H, W, 3, black = 0.0, white = 1.0) as DNG with a preview.
 
     The crop travels as embedded Camera Raw XMP so it can be reset in the editor;
     the LinearRaw main image is a SubIFD (macOS only thumbnails IFD0).
-    `integer=False` stores float16 with Deflate; `integer=True` stores uncompressed
-    uint16, the only variant macOS ImageIO renders (Finder / Quick Look previews).
+    `integer=False` stores float16 with Deflate and keeps values outside 0-1
+    (highlights above the white point, shadows below the black point);
+    `integer=True` stores uncompressed uint16 limited to 0-1 (BlackLevel 0,
+    WhiteLevel 65535), the only variant macOS ImageIO renders (Finder / Quick
+    Look previews). The 8-bit preview comes from the 0-1 limited sRGB image.
     """
     if linear.ndim != 3 or linear.shape[2] != 3:
         raise ValueError(f"DNG needs an RGB image, got shape {linear.shape}")
@@ -87,12 +91,18 @@ def write_dng(
 
 
 def _to_float16(linear: FloatImage) -> npt.NDArray[np.float16]:
-    """Replace NaN/inf and clip to [0, 65504], in row chunks (no full float copy)."""
+    """Replace NaN/inf and limit to the float16 range [-65504, 65504].
+
+    Values below 0 and above 1 are kept. Works in row chunks (no full float
+    copy).
+    """
     out = np.empty(linear.shape, np.float16)
     for start in range(0, linear.shape[0], CHUNK_ROWS):
         rows = slice(start, start + CHUNK_ROWS)
-        chunk = np.nan_to_num(linear[rows], nan=0.0, posinf=65504.0, neginf=0.0)
-        np.clip(chunk, 0.0, 65504.0, out=chunk)
+        chunk = np.nan_to_num(
+            linear[rows], nan=0.0, posinf=FLOAT16_MAX, neginf=-FLOAT16_MAX
+        )
+        np.clip(chunk, -FLOAT16_MAX, FLOAT16_MAX, out=chunk)
         out[rows] = chunk
     return out
 

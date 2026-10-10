@@ -36,16 +36,20 @@ def camera_to_srgb_matrix(
         return np.eye(3, dtype=np.float32)
 
 
-def apply_matrix(img: FloatImage, matrix: npt.NDArray[np.floating]) -> FloatImage:
+def apply_matrix(
+    img: FloatImage, matrix: npt.NDArray[np.floating], *, clip_input: bool = False
+) -> FloatImage:
     """Apply a 3x3 colour matrix per pixel; negative results are clipped.
 
-    Works in row chunks, so a non-contiguous view (a crop) is never copied whole.
+    `clip_input=True` limits the input to [0, 1] first. Works in row chunks,
+    so a non-contiguous view (a crop) is never copied whole.
     """
     transposed = np.asarray(matrix, np.float32).T
     out = np.empty(img.shape, np.float32)
     for start in range(0, img.shape[0], CHUNK_ROWS):
         rows = slice(start, start + CHUNK_ROWS)
-        np.matmul(img[rows], transposed, out=out[rows])
+        chunk = np.clip(img[rows], 0.0, 1.0) if clip_input else img[rows]
+        np.matmul(chunk, transposed, out=out[rows])
     np.maximum(out, np.float32(0.0), out=out)
     return out
 

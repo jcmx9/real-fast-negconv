@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 
-from real_fast_negconv.service.batch import BatchResult
+from real_fast_negconv.service.batch import BatchResult, problem_message
 from real_fast_negconv.service.daemon import Runner
 
 log = logging.getLogger(__name__)
@@ -17,10 +17,11 @@ POWERSHELL_APP_ID = (
 
 def summary_message(result: BatchResult) -> tuple[str, str]:
     """Title and German message for the end user."""
-    return (
-        "rfnegconv",
-        f"{len(result.succeeded)} Fotos fertig, {len(result.failed)} Fehler",
-    )
+    message = f"{len(result.succeeded)} Fotos fertig, {len(result.failed)} Fehler"
+    problem = problem_message(result)
+    if problem is not None:
+        message = f"{message}. {problem}"
+    return "rfnegconv", message
 
 
 def notification_command(title: str, message: str, platform: str) -> list[str] | None:

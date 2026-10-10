@@ -9,7 +9,7 @@ import numpy.typing as npt
 
 type Rotation = Literal[0, 90, 180, 270]
 
-MEASURE_INSET = 0.10  # per side; statistics use the inner 80 % (spec 12.A)
+MEASURE_INSET = 0.10  # per side; statistics use the inner 80 %
 
 
 @dataclass(frozen=True)
@@ -57,13 +57,6 @@ class Rect:
             min(width, self.right),
         )
 
-    def iou(self, other: "Rect") -> float:
-        """Intersection over union with another rectangle."""
-        height = min(self.bottom, other.bottom) - max(self.top, other.top)
-        width = min(self.right, other.right) - max(self.left, other.left)
-        inter = max(0, height) * max(0, width)
-        return inter / (self.area + other.area - inter)
-
 
 @dataclass(frozen=True)
 class FrameGeometry:
@@ -75,7 +68,7 @@ class FrameGeometry:
     size: tuple[float, float]
     confident: bool
     aspect: str
-    reason: str = ""  # why the crop and rotation are what they are (spec 12.Q)
+    reason: str = ""  # why the crop and rotation are what they are
 
     def crop_rect(self, shape: tuple[int, int], inset: float = 0.01) -> Rect:
         """Return the frame for an image of `shape`, pulled inwards by `inset`."""

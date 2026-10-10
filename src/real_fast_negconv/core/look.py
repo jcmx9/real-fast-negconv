@@ -1,21 +1,17 @@
-"""Faithful viewing look for JPEG/TIFF (spec 12.B, 12.V); DNG stays neutral.
+"""Gentle correction for JPEG/TIFF (contrast, saturation); DNG stays neutral.
 
-Three steps: `measure_look` reads statistics from a neutral image,
+Three steps: `measure_sampled` reads statistics from a neutral image,
 `look_params` turns statistics into parameters, `apply_look_params` applies
 them. The look never changes the exposure: it only adds contrast and
 saturation, both from the roll group's median statistics when given. All
-statistics are taken on the neutral image (crossover applied, spec 12.S).
+statistics are taken on the neutral image (crossover applied).
 """
 
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
 
 from real_fast_negconv.core.converter import FloatImage
-from real_fast_negconv.core.geometry import MEASURE_INSET
-
-type LookName = Literal["auto", "off"]
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
@@ -53,13 +49,8 @@ class LookParams:
     is_bw: bool
 
 
-def measure_look(srgb: FloatImage, inset: float = MEASURE_INSET) -> LookStats:
-    """Spread and mean chroma of the inner window (`inset` per side)."""
-    return measure_sampled(inner_sample(srgb, inset))
-
-
 def measure_sampled(sample: FloatImage) -> LookStats:
-    """Look statistics of pixels already taken with `inner_sample`."""
+    """Spread and mean chroma of pixels taken with `inner_sample`."""
     img = np.clip(sample, 0.0, 1.0)
     lum = _luminance(img)
     chroma = 0.0
@@ -74,7 +65,7 @@ def measure_sampled(sample: FloatImage) -> LookStats:
 def look_params(
     stats: LookStats, is_bw: bool, roll_tone: LookStats | None = None
 ) -> LookParams:
-    """Spec 12.V: contrast and saturation from `roll_tone` (the roll group's
+    """Contrast and saturation from `roll_tone` (the roll group's
     median spread and chroma) or, if None, from the frame's own statistics.
     No exposure correction: the picture's brightness is left as it is.
     """
@@ -114,13 +105,6 @@ def apply_look_params(srgb: FloatImage, params: LookParams) -> FloatImage:
     return out
 
 
-def apply_look(srgb: FloatImage, look: LookName) -> FloatImage:
-    """Convenience for single images: parameters from the image's own statistics."""
-    if look == "off":
-        return srgb
-    return apply_look_params(srgb, look_params(measure_look(srgb), srgb.ndim == 2))
-
-
 def _saturate_inplace(out: FloatImage, saturation: float) -> None:
     """Chroma-weighted boost: pale pixels gain most, vivid ones keep theirs."""
     factor = out.max(axis=2)
@@ -137,7 +121,7 @@ def _saturate_inplace(out: FloatImage, saturation: float) -> None:
 
 
 def inner_sample(plane: FloatImage, inset: float) -> FloatImage:
-    """Inner measurement window (spec 12.A), every SAMPLE_STEP-th pixel (a view)."""
+    """Inner measurement window, every SAMPLE_STEP-th pixel (a view)."""
     height, width = plane.shape[:2]
     dh, dw = int(height * inset), int(width * inset)
     inner = plane[dh : height - dh, dw : width - dw]

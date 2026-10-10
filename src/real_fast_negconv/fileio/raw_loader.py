@@ -10,6 +10,7 @@ import rawpy
 from real_fast_negconv.core.converter import FloatImage
 from real_fast_negconv.exceptions import RawLoadError
 
+READ_CHUNK = 1024 * 1024
 RAW_EXTENSIONS = frozenset(
     {
         ".arw",
@@ -63,6 +64,18 @@ def load(path: Path, *, half_size: bool = False) -> RawImage:
                 half_size=half_size,
             )
             matrix = np.array(raw.rgb_xyz_matrix[:3], dtype=np.float64)
+    except (
+        rawpy.LibRawUnsufficientMemoryError,  # type: ignore[attr-defined]  # rawpy ships no stubs
+        rawpy.LibRawMemPoolOverflowError,  # type: ignore[attr-defined]  # rawpy ships no stubs
+    ) as exc:
+        # not the file's fault: the machine ran out of memory
+        raise MemoryError(f"cannot read {path.name}: {exc}") from exc
+    except rawpy.LibRawIOError as exc:  # type: ignore[attr-defined]  # rawpy ships no stubs
+        # LibRaw reports every read problem the same way, without errno: a
+        # plain read tells an unreadable file (permission, I/O error, drive
+        # gone) from a truncated or corrupt one
+        cause = _read_failure(path) or exc
+        raise RawLoadError(f"cannot read {path.name}: {cause}") from cause
     except (rawpy.LibRawError, OSError, ValueError) as exc:  # type: ignore[attr-defined]  # rawpy ships no stubs
         raise RawLoadError(f"cannot read {path.name}: {exc}") from exc
     if not np.any(matrix):
@@ -70,3 +83,14 @@ def load(path: Path, *, half_size: bool = False) -> RawImage:
     rgb = rgb16.astype(np.float32)
     rgb *= np.float32(1.0 / 65535.0)
     return RawImage(rgb=rgb, xyz_to_cam=matrix, source=path)
+
+
+def _read_failure(path: Path) -> OSError | None:
+    """The OS error of reading `path` completely (1 MiB chunks), else None."""
+    try:
+        with path.open("rb") as handle:
+            while handle.read(READ_CHUNK):
+                pass
+    except OSError as exc:
+        return exc
+    return None

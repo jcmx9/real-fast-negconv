@@ -9,12 +9,16 @@ class ConfigError(RfNegconvError):
     """Invalid or incomplete configuration."""
 
 
+class FolderError(RfNegconvError):
+    """A configured folder is unreachable, not writable or full."""
+
+
 class RawLoadError(RfNegconvError):
     """A RAW file could not be decoded."""
 
 
-class OutputError(RfNegconvError):
-    """An output file could not be written."""
+class EncodeError(RfNegconvError):
+    """An output image could not be encoded from this file's data."""
 
 
 class ServiceError(RfNegconvError):

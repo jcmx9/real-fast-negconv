@@ -43,20 +43,20 @@ ASPECTS: dict[str, float] = {"1:1": 1.0, "6x7": 1.24, "6x4.5": 1.35, "3:2": 1.5}
 PREVIEW_EDGE = 1000
 EDGE_BAND_FRACTION = 0.6
 GAP_FRACTION = 0.9
-EDGE_FACTOR = 2.5  # border: edge score >= this x the segment's typical score (12.I)
+EDGE_FACTOR = 2.5  # border: edge score >= this x the segment's typical score
 EDGE_WINDOW = 0.06  # search window around a segment end, fraction of the axis
-# Deskew from the outer frame edges (12.N)
+# Deskew from the outer frame edges
 EDGE_BAND = 0.04  # band per side of each edge, x longer side of the rough frame
 COARSE_STEP = 0.25  # degrees between angles of the coarse search
 FINE_STEP = 0.02  # degrees between angles of the fine search around the coarse best
 MIN_GAIN = 0.01  # below this score gain over 0 deg: no edge, minAreaRect fallback
-# Translucent holder strips (12.O)
+# Translucent holder strips
 HOLDER_P10 = 0.8  # holder line: 10th percentile >= this x holder_min above base
 HOLDER_STEP = 0.005  # base-like line within this fraction of the long edge
-# Bare-light strips along the image border (12.P)
+# Bare-light strips along the image border
 BORDER_MARGIN = 0.02  # border ignored for the first base estimate, x long edge
 BARE_GAP = 0.2  # density below the first base estimate: bare light, not film
-# Colour or BW (12.R): small coloured details count, so a very high percentile
+# Colour or BW: small coloured details count, so a very high percentile
 BW_PERCENTILE = 99.9
 
 BARE_NOTE = "bare light (no film) ignored for the film base"
@@ -67,7 +67,7 @@ type Span = tuple[int, int]
 
 @dataclass(frozen=True)
 class AnalyzerSettings:
-    """Thresholds for frame detection and statistics (spec 5.3-5.6)."""
+    """Thresholds for frame detection and statistics."""
 
     holder_delta: float = 1.8
     holder_min: float = 1.0
@@ -88,11 +88,11 @@ class AnalyzerSettings:
 
 @dataclass(frozen=True, eq=False)
 class LookSample:
-    """Preview density on the look grid of the inner window (spec 12.K).
+    """Preview density on the look grid of the inner window.
 
-    The pixels `measure_look` and the black point read (every SAMPLE_STEP-th
+    The pixels the look statistics and the black point read (every SAMPLE_STEP-th
     pixel), with the gamma and camera matrix of the neutral preview: enough to
-    measure the look statistics again with a crossover exponent (spec 12.S).
+    measure the look statistics again with a crossover exponent.
     """
 
     density: FloatImage  # (rows, cols, 3)
@@ -109,8 +109,8 @@ class FrameAnalysis:
 
     `density_sample` (inner window, at most 1 MiB) lets the roll context
     measure the crossover with the film base it finally uses, `look_sample`
-    (1/16 of the inner window) re-measures the look statistics with it
-    (spec 12.S).
+    (1/16 of the inner window) re-measures the look statistics with the
+    crossover.
     """
 
     geometry: FrameGeometry
@@ -174,7 +174,11 @@ def analyze(
 def look_stats_for(analysis: FrameAnalysis, crossover: Triple) -> LookStats:
     """Look statistics of the frame's neutral preview with `crossover` applied.
 
-    Without a crossover (or without a look sample) the pass-1 statistics.
+    Without a crossover (or without a look sample) the pass-1 statistics. The
+    preview always uses the frame's own film base and colour/BW result from
+    pass 1, even when the roll decision later changes them (high-key film
+    base, roll majority for colour/BW); the roll group's median dampens the
+    difference.
     """
     if crossover == NO_CROSSOVER or analysis.look_sample.density.size == 0:
         return analysis.look_stats
@@ -194,12 +198,14 @@ def _look_stats(
     is_bw: bool,
     crossover: Triple,
 ) -> LookStats:
-    """Look statistics on a neutral sRGB preview of the crop (spec 12.K, 12.S).
+    """Look statistics on a neutral sRGB preview of the crop.
 
     Same steps as render.develop, on the look grid of the preview density:
-    own d_min/d_white, gamma by colour/BW, crossover, black point on the inner
-    window, camera -> sRGB. Every step is per pixel or a statistic over the
-    same grid, so this equals measuring on the whole developed preview crop.
+    the frame's own pass-1 d_min/d_white, gamma by its pass-1 colour/BW
+    result, crossover, black point on the inner window, camera -> sRGB. Every
+    step is per pixel or a statistic over the same grid, so with the same
+    film base and colour/BW result this equals measuring on the developed
+    preview crop.
     """
     params = ToneParams(d_min, d_white, sample.gamma, crossover=crossover)
     linear = density_to_linear(sample.density.copy(), params)
@@ -216,14 +222,14 @@ def _look_stats(
 def detect_frame(
     lum: FloatImage, settings: AnalyzerSettings
 ) -> tuple[FrameGeometry, BoolMask]:
-    """Find the image frame on the film strip (spec 5.3, deskew 12.N).
+    """Find the image frame on the film strip and its skew angle.
 
     A first pass without rotation gives the rough frame; its outer edges give
     the skew angle (film outline as fallback); after rotating, the frame
     detection runs again on the deskewed preview. If the fixed holder
     threshold gives no confident frame, translucent holder strips along the
     image borders are taken out of the film mask and the first pass is
-    repeated (12.O); its result is used only if it is confident. If the
+    repeated; its result is used only if it is confident. If the
     rotated pass is not confident but the unrotated one was, the unrotated
     frame is kept (angle 0).
     """
@@ -317,10 +323,10 @@ def _locate(
     settings: AnalyzerSettings,
     angle: float,
 ) -> tuple[FrameGeometry, Rect]:
-    """Frame rectangle on a preview already rotated by `angle` (spec 5.3).
+    """Frame rectangle on a preview already rotated by `angle`.
 
-    Also returns the frame edges for the deskew bands (12.N): the segment
-    found between gaps/rebate before aspect snapping and 12.I end-shortening
+    Also returns the frame edges for the deskew bands: the segment found
+    between gaps/rebate before aspect snapping and end-shortening
     moved any side, or the film bounding box when the frame is not confident.
     """
     edge = max(lum.shape)
@@ -412,7 +418,7 @@ def _film_mask(
 
 
 def _bare_light(lum: FloatImage) -> BoolMask:
-    """Pixels clearly clearer than any film base: bare light (spec 12.P).
+    """Pixels clearly clearer than any film base: bare light.
 
     The first base estimate ignores a border margin, where a thin strip of bare
     light (film edge, holder gap) would be the lowest density of the image.
@@ -439,7 +445,7 @@ def _holder_strips(
     settings: AnalyzerSettings,
     bare: BoolMask | None = None,
 ) -> BoolMask:
-    """Translucent holder strips along the four image borders (spec 12.O).
+    """Translucent holder strips along the four image borders.
 
     A strip is the run of lines (columns at the left/right border, rows at
     the top/bottom) from the border inwards whose density above d_ref has a
@@ -448,7 +454,7 @@ def _holder_strips(
     only if a base-like line (median <= loose_delta above d_ref) follows
     within HOLDER_STEP of the long edge; the strip then reaches up to that
     line. A motif band at the border (sky) has no base-like line after it.
-    Bare-light pixels (12.P) do not enter the line statistics.
+    Bare-light pixels do not enter the line statistics.
     """
     dens = lum - d_ref
     if bare is not None and bare.any():
@@ -514,10 +520,10 @@ class _EdgeBand:
 def _edge_angle(
     lum: FloatImage, film: BoolMask, edges: Rect, settings: AnalyzerSettings
 ) -> float | None:
-    """Skew angle from the outer edges of the rough frame (spec 12.N).
+    """Skew angle from the outer edges of the rough frame.
 
     `edges` are the frame edges before aspect snapping (see _locate), so the
-    angle does not depend on how 12.I shortens the frame.
+    angle does not depend on how end-shortening cuts the frame.
     Gradient magnitude in bands around the four frame edges only (the frame
     interior is excluded), on the film only: the film/holder boundary is the
     film outline (the minAreaRect fallback), and a holder that sits straight
@@ -679,7 +685,7 @@ def _snap_aspect(
 def _shrink_span(
     band: FloatImage, span: Span, length: float
 ) -> tuple[Span, tuple[int | None, int | None]]:
-    """Shrink span to length (spec 12.I); also returns the anchors it used.
+    """Shrink span to length; also returns the anchors it used.
 
     band is the density above the film base, shrinking axis along columns and
     the other axis' frame extent along rows. An end with a sharp straight edge
@@ -690,7 +696,7 @@ def _shrink_span(
     they are closer than length. Without any anchor, the excess is taken where
     the removed bands have the lowest summed median density (fog, rebate, gap
     fringe); ties resolve towards the symmetric split. The anchors are the
-    edge indices per end (None = not anchored) for the crop reason (12.Q);
+    edge indices per end (None = not anchored) for the crop reason;
     (None, None) when nothing had to be cut.
     """
     lo, hi = span
@@ -722,7 +728,7 @@ def _explain_shrink(
     names: tuple[str, str],
     side: int,
 ) -> str:
-    """Reason for the 12.I shortening of one axis; empty if nothing was cut.
+    """Reason for the end-shortening of one axis; empty if nothing was cut.
 
     Sizes are percent of the image side along that axis (analysis preview).
     """
@@ -751,7 +757,7 @@ def _explain_shrink(
 
 
 def _split_between_edges(excess: int, outer_lo: int, outer_hi: int) -> int:
-    """Excess taken at the low end when both ends are anchored (spec 12.I).
+    """Excess taken at the low end when both ends are anchored.
 
     outer_lo/outer_hi: span pixels outside the anchoring edge at each end
     (negative when the edge lies outside the span). Start from the even split
@@ -772,6 +778,8 @@ def _anchor_edges(band: FloatImage, span: Span) -> tuple[int | None, int | None]
     of that strongest step (between columns k and k + 1) per end.
     """
     lo, hi = span
+    if hi - lo < 3:  # no inside to compare with (tiny crops)
+        return None, None
     scores = np.median(np.abs(np.diff(band, axis=1)), axis=0)
     typical = float(np.median(scores[lo : hi - 1]))
     window = max(1, round(EDGE_WINDOW * band.shape[1]))
@@ -791,7 +799,7 @@ def _is_bw(crop: FloatImage, d_min: Triple, d_white: Triple, threshold: float) -
 
     A colour photo may be mostly neutral with a few coloured details, while
     black-and-white film has no colour anywhere: a high percentile catches
-    even a small coloured share (spec 12.R).
+    even a small coloured share.
     """
     d_min_arr = np.asarray(d_min, np.float32)
     d_hi = np.maximum(

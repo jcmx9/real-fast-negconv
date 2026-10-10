@@ -9,6 +9,7 @@ from real_fast_negconv.core.geometry import Rect
 
 EPS = 1.0 / 65535.0
 MIN_SPREAD = 0.05
+CHUNK_ROWS = 256
 LN10 = float(np.log(10.0))
 
 type FloatImage = npt.NDArray[np.float32]
@@ -21,7 +22,7 @@ NO_CROSSOVER: Triple = (1.0, 1.0, 1.0)
 class ToneParams:
     """Per-frame inversion parameters (all densities absolute, per channel).
 
-    `crossover` is the layer-steepness exponent k per channel (spec 12.S).
+    `crossover` is the layer-steepness exponent k per channel (colour crossover).
     """
 
     d_min: Triple
@@ -102,15 +103,32 @@ def black_point(
     return float(np.percentile(lum, percentile))
 
 
-def apply_black_point(linear: FloatImage, black: float) -> FloatImage:
-    """Map `black` to 0 with a common offset for all channels, clip to [0, 1]."""
+def apply_black_point(
+    linear: FloatImage, black: float, *, clip: bool = True
+) -> FloatImage:
+    """Map `black` to 0 with a common offset for all channels (in place).
+
+    `clip=True` limits the result to [0, 1]; `clip=False` keeps values below
+    the black point (< 0) and above the white point (> 1).
+    """
     if 0.0 < black < 0.99:
         linear -= np.float32(black)
         linear *= np.float32(1.0 / (1.0 - black))
-    np.clip(linear, 0.0, 1.0, out=linear)
+    if clip:
+        np.clip(linear, 0.0, 1.0, out=linear)
     return linear
 
 
-def to_mono(linear: FloatImage) -> FloatImage:
-    """Average the colour channels into a single grey channel."""
-    return np.asarray(linear.mean(axis=-1), dtype=np.float32)
+def to_mono(linear: FloatImage, *, clip: bool = False) -> FloatImage:
+    """Average the colour channels into a single grey channel.
+
+    `clip=True` averages the channels limited to [0, 1], in row chunks (no
+    full-size clipped copy).
+    """
+    if not clip:
+        return np.asarray(linear.mean(axis=-1), dtype=np.float32)
+    out = np.empty(linear.shape[:2], np.float32)
+    for start in range(0, linear.shape[0], CHUNK_ROWS):
+        rows = slice(start, start + CHUNK_ROWS)
+        out[rows] = np.clip(linear[rows], 0.0, 1.0).mean(axis=-1)
+    return out

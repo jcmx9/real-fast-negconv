@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RollSettings:
-    """Thresholds for grouping, high-key fallback (5.5) and crossover (12.S)."""
+    """Thresholds for grouping, high-key fallback and colour crossover."""
 
     hue_tol: float = 0.06
     highkey_delta: float = 0.10
@@ -72,8 +72,8 @@ def decide(
 ) -> list[RollDecision]:
     """Choose film base per frame, borrowing roll baseline for high-key frames.
 
-    Crossover (spec 12.S): measured per colour frame with the film base
-    finally used, combined with the roll's value. Look (spec 12.V): contrast and
+    Crossover: measured per colour frame with the film base
+    finally used, combined with the roll's value. Look: contrast and
     saturation from the median statistics of its group (high-key frames left
     out while others exist); the statistics are those of the
     crossover-corrected preview.
@@ -102,7 +102,7 @@ def decide(
                 index,
                 "bw" if bw else "colour",
             )
-    # BW frames are not measured; a roll group is all BW or all colour (12.C)
+    # BW frames are not measured; a roll group is all BW or all colour
     # and a roll value needs three measured frames, so BW frames get none.
     mids = [
         None if bw else frame_mids(a.density_sample, d_min, a.d_white)

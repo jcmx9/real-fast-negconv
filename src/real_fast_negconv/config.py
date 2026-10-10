@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 DIR_FIELDS = ("negative_dir", "archive_dir", "photos_dir")
 HOLDER_MIN_FLOOR = 0.3  # lower bound of holder_min, also for the derived default
+IGNORED_KEYS = ("verbosity",)  # accepted in the file without effect (-Q/-v/-vv)
 _ANALYZER = AnalyzerSettings()
 _ROLLS = RollSettings()
 
@@ -39,7 +40,7 @@ def default_log_dir() -> Path:
 
 
 class Config(BaseModel):
-    """Runtime configuration (spec 7.1)."""
+    """Runtime configuration (config file plus command-line overrides)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -74,7 +75,6 @@ class Config(BaseModel):
     highkey_delta: float = Field(default=_ROLLS.highkey_delta, ge=0)
     uniform_ratio: float = Field(default=_ROLLS.uniform_ratio, ge=1)
     crossover_limit: float = Field(default=_ROLLS.crossover_limit, ge=0, le=0.5)
-    verbosity: int = Field(default=1, ge=0, le=3)
 
     @field_validator(*DIR_FIELDS, "exiftool_path", mode="before")
     @classmethod
@@ -164,6 +164,9 @@ def load_config(path: Path) -> Config:
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
     data: dict[str, Any] = dict(raw_data)
+    for key in IGNORED_KEYS:
+        if data.pop(key, None) is not None:
+            log.debug("config key %r has no effect; ignored", key)
     try:
         return Config.model_validate(data)
     except ValidationError as exc:

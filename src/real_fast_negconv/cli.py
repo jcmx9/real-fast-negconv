@@ -17,17 +17,23 @@ from real_fast_negconv.config import (
     default_log_dir,
     load_config,
 )
-from real_fast_negconv.exceptions import ConfigError, RfNegconvError
+from real_fast_negconv.exceptions import ConfigError, FolderError, RfNegconvError
 from real_fast_negconv.fileio.exiftool import ExifTool
 from real_fast_negconv.service import daemon
-from real_fast_negconv.service.batch import BUSY_MESSAGE, BatchResult, run_batch
+from real_fast_negconv.service.batch import (
+    BUSY_MESSAGE,
+    BatchResult,
+    problem_message,
+    run_batch,
+)
 from real_fast_negconv.service.notify import notify, summary_message
 from real_fast_negconv.service.render import CROP_DETAIL
 from real_fast_negconv.service.watcher import watch as watch_folder
 
 log = logging.getLogger(__name__)
 
-LOG_FILE_NAME = "rfnegconv.log"
+LOG_FILE_NAME = "rfnegconv.log"  # background watcher (service)
+RUN_LOG_FILE_NAME = "rfnegconv-run.log"  # single runs (launcher, terminal)
 
 app = typer.Typer(
     name="rfnegconv",
@@ -50,8 +56,14 @@ class State:
     verbosity: int
 
 
-def setup_logging(verbosity: int, log_dir: Path) -> None:
-    """File log always; console according to verbosity (0 = none)."""
+def setup_logging(
+    verbosity: int, log_dir: Path, file_name: str = RUN_LOG_FILE_NAME
+) -> None:
+    """File log always; console according to verbosity (0 = none).
+
+    The watcher and single runs write separate files, so two processes never
+    rotate the same file.
+    """
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
@@ -59,7 +71,7 @@ def setup_logging(verbosity: int, log_dir: Path) -> None:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            log_dir / LOG_FILE_NAME,
+            log_dir / file_name,
             maxBytes=5_000_000,
             backupCount=5,
             encoding="utf-8",
@@ -146,6 +158,17 @@ def run(
             help="Write uint16 DNG so Finder / Quick Look show previews (larger).",
         ),
     ] = None,
+    summary: Annotated[
+        bool,
+        typer.Option(
+            "--summary",
+            help=(
+                "Print one line 'processed=<n> failed=<m> busy=<0|1>' for "
+                "launchers; exit 1 if the run cannot start or files stayed in "
+                "the Negative folder (disk full, permissions)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Process everything in the Negative folder once."""
     overrides = {
@@ -155,17 +178,26 @@ def run(
         "dng": dng,
         "dng_finder_preview": dng_finder_preview,
     }
-    _run(ctx.obj, overrides)
+    _run(ctx.obj, overrides, summary=summary)
 
 
 @app.command()
 def watch(ctx: typer.Context) -> None:
     """Keep running and process new files as they arrive."""
     state: State = ctx.obj
-    setup_logging(state.verbosity, default_log_dir())
+    setup_logging(state.verbosity, default_log_dir(), LOG_FILE_NAME)
     cfg = _load(state, {})
+
+    def on_problem(message: str) -> None:
+        if cfg.notify:
+            notify("rfnegconv", message)
+
     try:
-        watch_folder(cfg, on_batch=lambda result: _report(cfg, result))
+        watch_folder(
+            cfg,
+            on_batch=lambda result: _report(cfg, state.verbosity, result),
+            on_problem=on_problem,
+        )
     except KeyboardInterrupt:
         log.info("Stopped.")
     except RfNegconvError as exc:
@@ -190,6 +222,7 @@ def service_status(ctx: typer.Context) -> None:
     _service(
         lambda: (
             f"{daemon.status()}\nLog file: {default_log_dir() / LOG_FILE_NAME}"
+            f"\nRun log file: {default_log_dir() / RUN_LOG_FILE_NAME}"
             f"\n{_exiftool_line(ctx.obj)}"
         )
     )
@@ -264,36 +297,53 @@ def _service(action: Any) -> None:
 
 def _load(state: State, overrides: dict[str, Any]) -> Config:
     try:
-        cfg = load_config(state.config_path).merge_overrides(
-            overrides | {"verbosity": state.verbosity}
-        )
+        cfg = load_config(state.config_path).merge_overrides(overrides)
         cfg.require_dirs()
     except RfNegconvError as exc:
         _fail(state, exc)
     return cfg
 
 
-def _run(state: State, overrides: dict[str, Any]) -> None:
+def _run(state: State, overrides: dict[str, Any], *, summary: bool = False) -> None:
     setup_logging(state.verbosity, default_log_dir())
     cfg = _load(state, overrides)
     try:
         result = run_batch(cfg)
     except RfNegconvError as exc:
         _fail(state, exc)
+    except OSError as exc:  # anything the batch did not classify itself
+        _fail(state, FolderError(f"{exc.strerror or exc} ({exc.filename or '-'})"))
+    problem = problem_message(result)
+    if summary:  # the launcher reports the outcome itself (dialog, no notification)
+        if problem is not None:  # shown by the launcher instead of the counts
+            _fail(state, FolderError(problem))
+        typer.echo(summary_line(result))
+        return
     if result.busy:
-        if cfg.verbosity >= 1:
+        if state.verbosity >= 1:
             typer.echo(BUSY_MESSAGE)
         return
-    _report(cfg, result)
+    _report(cfg, state.verbosity, result)
     if result.failed:
         raise typer.Exit(1)
 
 
-def _report(cfg: Config, result: BatchResult) -> None:
-    if cfg.verbosity >= 1:
+def summary_line(result: BatchResult) -> str:
+    """Machine-readable outcome of one run for the launchers."""
+    return (
+        f"processed={len(result.succeeded)} failed={len(result.failed)} "
+        f"busy={int(result.busy)}"
+    )
+
+
+def _report(cfg: Config, verbosity: int, result: BatchResult) -> None:
+    if verbosity >= 1:
         typer.echo(f"{len(result.succeeded)} converted, {len(result.failed)} failed")
         for path, reason in result.failed:
             typer.echo(f"  {path.name}: {reason}", err=True)
+        problem = problem_message(result)
+        if problem is not None:
+            typer.echo(problem, err=True)
     if cfg.notify and (result.succeeded or result.failed):
         notify(*summary_message(result))
 

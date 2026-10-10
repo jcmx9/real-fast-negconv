@@ -21,7 +21,7 @@ def describe(
 ) -> str:
     """One ASCII line documenting how the frame was processed.
 
-    `crossover` (crossover_note, spec 12.S) is added as `crossover: <note>`
+    `crossover` (crossover_note) is added as `crossover: <note>`
     when not empty; `reason` (FrameGeometry.reason) is appended last as
     `crop: <reason>`.
     """

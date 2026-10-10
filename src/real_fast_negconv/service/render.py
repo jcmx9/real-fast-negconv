@@ -98,6 +98,9 @@ def develop(
 ) -> Developed:
     """Negative -> neutral positive: density maths, deskew, orientation, crop.
 
+    `linear` (for the DNG) keeps values below the black point and above the
+    white point; `srgb` (for TIFF/JPEG) is built from values limited to 0-1.
+
     Consumes `raw`: its pixel buffer is taken over and converted in place, so
     the original frame is freed as soon as deskew/orientation replace it.
     """
@@ -113,12 +116,16 @@ def develop(
     linear = deskew(linear, analysis.geometry.angle_deg)
     crop = analysis.geometry.crop_rect((linear.shape[0], linear.shape[1]))
     linear, crop = orient(linear, crop, cfg.rotate, cfg.mirror)
-    apply_black_point(linear, black_point(linear, crop.inner(cfg.measure_inset)))
+    # the DNG keeps values outside 0-1; TIFF/JPEG use them limited to 0-1
+    black = black_point(linear, crop.inner(cfg.measure_inset))
+    apply_black_point(linear, black, clip=False)
     if decision.is_bw:
+        srgb = srgb_encode(to_mono(linear[crop.slices()], clip=True), inplace=True)
         linear = to_mono(linear)
-        srgb = srgb_encode(linear[crop.slices()])
     else:
-        cropped = apply_matrix(linear[crop.slices()], camera_to_srgb_matrix(xyz_to_cam))
+        cropped = apply_matrix(
+            linear[crop.slices()], camera_to_srgb_matrix(xyz_to_cam), clip_input=True
+        )
         srgb = srgb_encode(cropped, inplace=True)
     description = describe(
         version=__version__,

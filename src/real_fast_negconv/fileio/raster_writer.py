@@ -1,5 +1,6 @@
 """Write sRGB-encoded TIFF (16-bit) and JPEG (8-bit) files."""
 
+import io
 import struct
 from functools import cache
 from pathlib import Path
@@ -11,6 +12,7 @@ from PIL import Image, ImageCms
 
 from real_fast_negconv import __version__
 from real_fast_negconv.core.converter import FloatImage
+from real_fast_negconv.exceptions import EncodeError
 from real_fast_negconv.fileio.atomic import atomic_write
 
 CHUNK_ROWS = 256
@@ -74,23 +76,35 @@ def write_tiff(path: Path, srgb: FloatImage, *, description: str) -> None:
 def write_jpeg(
     path: Path, srgb: FloatImage, *, description: str, quality: int = 95
 ) -> None:
-    """Write an 8-bit JPEG; RGB images get an embedded sRGB profile."""
+    """Write an 8-bit JPEG; RGB images get an embedded sRGB profile.
+
+    The image is encoded in memory first, so an encoder failure (EncodeError,
+    a problem of this file's data) is told apart from an OS error while
+    writing the file (disk full, permissions).
+    """
     data = quantize(srgb, np.uint8)
     image = Image.fromarray(data)
     exif = Image.Exif()
     exif[0x010E] = description.encode("ascii", "replace").decode("ascii")
     exif_bytes = exif.tobytes()
-
-    def write(tmp: Path) -> None:
+    buffer = io.BytesIO()
+    try:
         if data.ndim == 3:
             image.save(
-                tmp,
+                buffer,
                 format="JPEG",
                 quality=quality,
                 exif=exif_bytes,
                 icc_profile=srgb_icc_profile(),
             )
         else:
-            image.save(tmp, format="JPEG", quality=quality, exif=exif_bytes)
+            image.save(buffer, format="JPEG", quality=quality, exif=exif_bytes)
+    except (OSError, ValueError) as exc:
+        raise EncodeError(f"cannot encode {path.name}: {exc}") from exc
+    encoded = buffer.getvalue()
+    del buffer
+
+    def write(tmp: Path) -> None:
+        tmp.write_bytes(encoded)
 
     atomic_write(path, write)

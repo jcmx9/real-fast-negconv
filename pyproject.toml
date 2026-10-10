@@ -55,7 +55,7 @@ Issues = "https://github.com/jcmx9/real-fast-negconv/issues"
 path = "src/real_fast_negconv/__init__.py"
 
 [tool.bumpversion]
-current_version = "26.10.6"
+current_version = "26.10.7"
 commit = true
 tag = true
 tag_name = "v{new_version}"
@@ -91,6 +91,26 @@ replace = "**Version {new_version}**"
 filename = "README.en.md"
 search = "**Version {current_version}**"
 replace = "**Version {new_version}**"
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "`rfnegconv {current_version} | color"
+replace = "`rfnegconv {new_version} | color"
+
+[[tool.bumpversion.files]]
+filename = "README.en.md"
+search = "`rfnegconv {current_version} | color"
+replace = "`rfnegconv {new_version} | color"
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "(z. B. `{current_version}`)"
+replace = "(z. B. `{new_version}`)"
+
+[[tool.bumpversion.files]]
+filename = "README.en.md"
+search = "(e.g. `{current_version}`)"
+replace = "(e.g. `{new_version}`)"
 
 [tool.ruff]
 target-version = "py312"

@@ -34,7 +34,7 @@ The test suite is maintained separately and is not published; the maintainer run
 
 ## Manual Acceptance: Watch Mode on Windows
 
-CI does not cover Windows. Before merging changes to `watcher.py`:
+CI runs lint on Windows (all supported Python versions) and an installer test (a smoke test in the published tree), but no end-to-end watch-folder run. Before merging changes to `watcher.py`:
 
 1. On a Windows machine, clone the repository, run `uv sync` and set `$env:RFNEGCONV_HOME = ".devhome"` (isolated app folder; never `uv tool install` over a real installation).
 2. Write `.devhome\config\config.toml` with `negative_dir`, `archive_dir` and `photos_dir`.
@@ -48,3 +48,4 @@ CI does not cover Windows. Before merging changes to `watcher.py`:
 - [ ] Type check passes (`uv run mypy src/`)
 - [ ] Both READMEs updated and in sync (if behaviour or options changed)
 - [ ] CHANGELOG updated under `[Unreleased]`
+- [ ] `sh scripts/check_release.sh` passes (one version everywhere; `constraints.txt` matches `uv.lock` – after a dependency change regenerate it with the command in its first lines)

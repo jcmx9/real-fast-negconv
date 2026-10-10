@@ -94,19 +94,6 @@ def install(
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
     """Install and start the service."""
-    return _install(
-        log_dir=log_dir, platform=platform, home=home, runner=runner, sleep=sleep
-    )
-
-
-def _install(
-    *,
-    log_dir: Path,
-    platform: str = sys.platform,
-    home: Path | None = None,
-    runner: Runner | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> str:
     runner = runner or _default_runner()
     command = service_command()
     path_env = os.environ.get("PATH", "")

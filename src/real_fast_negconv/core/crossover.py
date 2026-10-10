@@ -1,4 +1,4 @@
-"""Colour crossover correction: per-layer steepness from mid-grey (spec 12.S).
+"""Colour crossover correction: per-layer steepness from mid-grey.
 
 The three dye layers of a colour negative have slightly different gradation
 curves. Film base (x = 0) and white point (x = 1) are neutral after the
