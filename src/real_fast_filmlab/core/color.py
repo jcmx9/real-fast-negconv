@@ -1,0 +1,109 @@
+"""Camera RGB -> sRGB conversion and sRGB transfer function."""
+
+import logging
+
+import numpy as np
+import numpy.typing as npt
+
+from real_fast_filmlab.core.converter import FloatImage
+
+log = logging.getLogger(__name__)
+
+CHUNK_ROWS = 256
+
+SRGB_TO_XYZ = np.array(
+    [
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ]
+)
+
+
+D65_WHITE = SRGB_TO_XYZ.sum(axis=1)  # XYZ of sRGB white
+
+
+def neutral_color_matrix(
+    xyz_to_cam: npt.NDArray[np.floating],
+) -> npt.NDArray[np.float64]:
+    """XYZ -> camera matrix scaled so that D65 white gives camera (1, 1, 1).
+
+    The developed data are neutral at equal camera values. A reader that
+    follows the DNG rules derives the white point from this matrix and the
+    neutral (1, 1, 1): with the rows scaled this way that white is D65 and
+    the reader's colours equal those of `camera_to_srgb_matrix`. An unusable
+    matrix is returned unchanged.
+    """
+    matrix = np.asarray(xyz_to_cam, np.float64)
+    white = matrix @ D65_WHITE
+    if not np.all(np.isfinite(matrix)) or np.any(np.abs(white) < 1e-6):
+        return matrix
+    return np.asarray(matrix / white[:, None], dtype=np.float64)
+
+
+def camera_to_srgb_matrix(
+    xyz_to_cam: npt.NDArray[np.floating],
+) -> npt.NDArray[np.float32]:
+    """Matrix mapping white-balanced camera RGB to linear sRGB (dcraw method)."""
+    cam_rgb = np.asarray(xyz_to_cam, np.float64) @ SRGB_TO_XYZ
+    sums = cam_rgb.sum(axis=1, keepdims=True)
+    if not np.all(np.isfinite(cam_rgb)) or np.any(np.abs(sums) < 1e-6):
+        log.warning("Unusable camera colour matrix; using identity (colours raw)")
+        return np.eye(3, dtype=np.float32)
+    try:
+        return np.linalg.inv(cam_rgb / sums).astype(np.float32)
+    except np.linalg.LinAlgError:
+        log.warning("Singular camera colour matrix; using identity (colours raw)")
+        return np.eye(3, dtype=np.float32)
+
+
+def apply_matrix(
+    img: FloatImage, matrix: npt.NDArray[np.floating], *, clip_input: bool = False
+) -> FloatImage:
+    """Apply a 3x3 colour matrix per pixel; negative results are clipped.
+
+    `clip_input=True` limits the input to [0, 1] first. Works in row chunks,
+    so a non-contiguous view (a crop) is never copied whole.
+    """
+    transposed = np.asarray(matrix, np.float32).T
+    out = np.empty(img.shape, np.float32)
+    for start in range(0, img.shape[0], CHUNK_ROWS):
+        rows = slice(start, start + CHUNK_ROWS)
+        chunk = np.clip(img[rows], 0.0, 1.0) if clip_input else img[rows]
+        np.matmul(chunk, transposed, out=out[rows])
+    np.maximum(out, np.float32(0.0), out=out)
+    return out
+
+
+def srgb_encode(linear: FloatImage, *, inplace: bool = False) -> FloatImage:
+    """sRGB OETF on values clipped to [0, 1].
+
+    `inplace=True` overwrites a float32 `linear` instead of allocating a copy.
+    """
+    if inplace and linear.dtype == np.float32:
+        out = np.clip(linear, 0.0, 1.0, out=linear)
+    else:
+        out = np.clip(linear, 0.0, 1.0).astype(np.float32)
+    low = out <= 0.0031308
+    low_values = out[low] * np.float32(12.92)
+    np.power(out, np.float32(1.0 / 2.4), out=out)
+    out *= np.float32(1.055)
+    out -= np.float32(0.055)
+    out[low] = low_values
+    return out
+
+
+def srgb_decode(encoded: FloatImage, *, inplace: bool = False) -> FloatImage:
+    """Inverse of `srgb_encode` for values in [0, 1] (sRGB EOTF)."""
+    if inplace and encoded.dtype == np.float32:
+        out = encoded
+    else:
+        out = encoded.astype(np.float32)
+    low = out <= np.float32(0.04045)
+    low_values = out[low] / np.float32(12.92)
+    out += np.float32(0.055)
+    out /= np.float32(1.055)
+    np.maximum(out, np.float32(0.0), out=out)
+    np.power(out, np.float32(2.4), out=out)
+    out[low] = low_values
+    return out

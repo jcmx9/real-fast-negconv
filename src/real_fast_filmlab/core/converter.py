@@ -1,0 +1,145 @@
+"""Density-space maths: colour negative -> neutral, scene-linear positive."""
+
+from dataclasses import dataclass
+
+import numpy as np
+import numpy.typing as npt
+
+from real_fast_filmlab.core.geometry import Rect
+
+EPS = 1.0 / 65535.0
+MIN_SPREAD = 0.05
+LN10 = float(np.log(10.0))
+
+type FloatImage = npt.NDArray[np.float32]
+type Triple = tuple[float, float, float]
+
+NO_CROSSOVER: Triple = (1.0, 1.0, 1.0)
+
+
+@dataclass(frozen=True)
+class ToneParams:
+    """Per-frame inversion parameters (all densities absolute, per channel).
+
+    `crossover` is the layer-steepness exponent k per channel (colour crossover).
+    """
+
+    d_min: Triple
+    d_white: Triple
+    gamma: float
+    crossover: Triple = NO_CROSSOVER
+
+    @property
+    def d_hi(self) -> npt.NDArray[np.float32]:
+        """Density spread from film base to white point, per channel."""
+        spread = np.asarray(self.d_white, np.float32) - np.asarray(
+            self.d_min, np.float32
+        )
+        return np.maximum(spread, np.float32(MIN_SPREAD))
+
+
+def to_density(rgb: FloatImage, *, inplace: bool = False) -> FloatImage:
+    """Optical density D = -log10(T) of linear transmission values.
+
+    `inplace=True` overwrites a float32 `rgb` instead of allocating a copy.
+    """
+    if inplace and rgb.dtype == np.float32:
+        density = np.maximum(rgb, np.float32(EPS), out=rgb)
+    else:
+        density = np.maximum(rgb, np.float32(EPS)).astype(np.float32, copy=False)
+    np.log10(density, out=density)
+    np.negative(density, out=density)
+    return density
+
+
+def _normalize_inplace(
+    density: FloatImage,
+    d_min: npt.NDArray[np.floating],
+    d_hi: npt.NDArray[np.floating],
+) -> float:
+    target = float(np.mean(d_hi))
+    density -= np.asarray(d_min, np.float32)
+    np.maximum(density, np.float32(0.0), out=density)
+    density *= (target / np.asarray(d_hi, np.float32)).astype(np.float32)
+    return target
+
+
+def normalize_density(
+    density: FloatImage,
+    d_min: npt.NDArray[np.floating],
+    d_hi: npt.NDArray[np.floating],
+) -> tuple[FloatImage, float]:
+    """Subtract the film base and equalise channel spreads (returns a copy)."""
+    out = density.astype(np.float32, copy=True)
+    return out, _normalize_inplace(out, d_min, d_hi)
+
+
+def density_to_linear(density: FloatImage, params: ToneParams) -> FloatImage:
+    """Convert density (in place) to scene-linear light with white at 1.0.
+
+    x = D_norm / D_target, x' = x ** k (crossover, per channel; base 0 and
+    white 1 stay fixed), Y = 10^((x' * D_target - D_target) / gamma)
+    """
+    target = _normalize_inplace(
+        density, np.asarray(params.d_min, np.float32), params.d_hi
+    )
+    if params.crossover != NO_CROSSOVER:
+        density *= np.float32(1.0 / target)
+        np.power(density, np.asarray(params.crossover, np.float32), out=density)
+        density *= np.float32(target)
+    density -= np.float32(target)
+    density *= np.float32(LN10 / params.gamma)
+    np.exp(density, out=density)
+    return density
+
+
+def black_point(
+    linear: FloatImage, crop: Rect, percentile: float = 0.5, step: int = 4
+) -> float:
+    """Luminance percentile inside the crop (every `step`-th pixel)."""
+    sample = linear[crop.slices()][::step, ::step]
+    lum = sample.mean(axis=-1) if sample.ndim == 3 else sample
+    return float(np.percentile(lum, percentile))
+
+
+def apply_black_point(
+    linear: FloatImage, black: float, *, clip: bool = True
+) -> FloatImage:
+    """Map `black` to 0 with a common offset for all channels (in place).
+
+    `clip=True` limits the result to [0, 1]; `clip=False` keeps values below
+    the black point (< 0) and above the white point (> 1).
+    """
+    if 0.0 < black < 0.99:
+        linear -= np.float32(black)
+        linear *= np.float32(1.0 / (1.0 - black))
+    if clip:
+        np.clip(linear, 0.0, 1.0, out=linear)
+    return linear
+
+
+def mono_weights(d_min: Triple) -> Triple:
+    """Channel weights for a black-and-white picture: the base transmission.
+
+    The three channels of a silver image carry the same picture, but not the
+    same noise: a channel that lets less light through the film base (and the
+    lamp and sensor) is noisier. Weighting by the transmission 10^-d_min of
+    the film base, normalised to sum 1, lowers the noise of the grey picture.
+    """
+    transmission = np.power(10.0, -np.asarray(d_min, np.float64))
+    total = float(transmission.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    r, g, b = (float(value) / total for value in transmission)
+    return (r, g, b)
+
+
+def to_mono(linear: FloatImage, weights: Triple | None = None) -> FloatImage:
+    """Combine the colour channels into a single grey channel (unclipped).
+
+    Without `weights` the plain average; else the weighted sum (weights
+    summing to 1, see `mono_weights`).
+    """
+    if weights is None:
+        return np.asarray(linear.mean(axis=-1), dtype=np.float32)
+    return np.asarray(linear @ np.asarray(weights, np.float32), dtype=np.float32)
