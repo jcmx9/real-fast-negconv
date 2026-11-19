@@ -15,7 +15,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from real_fast_filmlab.config import IGNORED_KEYS, Config, format_errors, load_config
+from real_fast_filmlab.config import (
+    IGNORED_KEYS,
+    Config,
+    format_errors,
+    load_config,
+    syntax_error,
+)
 from real_fast_filmlab.exceptions import ConfigError
 from real_fast_filmlab.fileio.atomic import atomic_write
 from real_fast_filmlab.system import automatic_workers
@@ -25,6 +31,7 @@ SWITCHES = ("dng", "tiff", "contact_sheet", "service", "update_check")
 HEADER = (
     "# real-fast-filmlab – Einstellungen\n"  # noqa: RUF001  # German typographic dash is intended
     "# Schalter: true = an, false = aus. Eine Änderung gilt ab dem nächsten Lauf.\n"
+    "# Geänderte Ordner übernimmt der Hintergrunddienst erst nach einem Neustart.\n"
 )
 
 
@@ -208,12 +215,12 @@ def init_file(
     """
     unknown = [name for name in switches_off if name not in SWITCHES]
     if unknown:
-        raise ConfigError("unknown switch: " + ", ".join(unknown))
+        raise ConfigError("Unbekannter Schalter: " + ", ".join(unknown))
     if not path.exists():
         values = default_values(folders)
         values.update(dict.fromkeys(switches_off, False))
         text = render(values)
-        _check(text, path)
+        _check(text)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("x", encoding="utf-8", newline="") as handle:  # never overwrite
             handle.write(text)
@@ -222,7 +229,7 @@ def init_file(
     try:
         original = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:  # pragma: no cover - load read it
-        raise ConfigError(f"cannot read {path}: {exc}") from exc
+        raise ConfigError("Die Konfigurationsdatei ist nicht lesbar.") from exc
     present = set(tomllib.loads(original))
     current: dict[str, object] = {k.name: getattr(loaded, k.name) for k in ALL_KEYS}
     for name, folder in folders.items():
@@ -247,12 +254,15 @@ def init_file(
                 text = set_value(text, key.name, current[key.name])
     if text == original:
         return InitResult(status="kept", config=loaded)
-    _check(text, path)
+    _check(text)
     atomic_write(path, lambda tmp: _write_text(tmp, text))
     return InitResult(status="completed", config=load_config(path))
 
 
-def _check(text: str, path: Path) -> None:
+_CANNOT_COMPLETE = "Die Konfigurationsdatei kann nicht ergänzt werden."
+
+
+def _check(text: str) -> None:
     """The text must load as a valid config before it is written."""
     try:
         data: dict[str, Any] = tomllib.loads(text)
@@ -260,9 +270,9 @@ def _check(text: str, path: Path) -> None:
             data.pop(key, None)
         Config.model_validate(data)
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"cannot complete {path}: {exc}") from exc
+        raise ConfigError(f"{_CANNOT_COMPLETE} {syntax_error(exc)}") from exc
     except ValidationError as exc:
-        raise ConfigError(f"cannot complete {path}: {format_errors(exc)}") from exc
+        raise ConfigError(f"{_CANNOT_COMPLETE} {format_errors(exc)}") from exc
 
 
 def _write_text(path: Path, text: str) -> None:

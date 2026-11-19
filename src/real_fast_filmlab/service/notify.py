@@ -5,23 +5,38 @@ import shutil
 import subprocess
 import sys
 
-from real_fast_filmlab.service.batch import BatchResult, problem_message
+from real_fast_filmlab.service.batch import ERROR_DIR, BatchResult, problem_message
 from real_fast_filmlab.service.daemon import Runner
 
 log = logging.getLogger(__name__)
+
+TITLE = "rffilmlab"
 
 POWERSHELL_APP_ID = (
     r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
 )
 
 
-def summary_message(result: BatchResult) -> tuple[str, str]:
-    """Title and German message for the end user."""
-    message = f"{len(result.succeeded)} Fotos fertig, {len(result.failed)} Fehler"
+def summary_message(result: BatchResult, *, service: bool = False) -> tuple[str, str]:
+    """Title and German message for the end user.
+
+    Files that failed on their own account are counted with the place their
+    reasons are; files kept because of the surroundings are told by the
+    problem text, which carries its own counts. `service`: the background
+    service shows it (after a full disk it goes on by itself).
+    """
+    done = len(result.succeeded)
+    moved = len(result.failed) - len(result.kept)  # now in _Fehler
+    where = f" – Details in {result.folder}/{ERROR_DIR}" if moved else ""  # noqa: RUF001  # German typographic dash is intended
+    errors = f"{moved} Fehler{where}"
     problem = problem_message(result)
-    if problem is not None:
-        message = f"{message}. {problem}"
-    return "rffilmlab", message
+    if problem is None:
+        photos = "Foto" if done == 1 else "Fotos"
+        return TITLE, f"{done} {photos} fertig, {errors}"
+    message = f"{problem} {errors}." if moved else problem
+    if service and result.disk_full:
+        message += " Sobald wieder Platz frei ist, geht es von selbst weiter."
+    return TITLE, message
 
 
 def notification_command(title: str, message: str, platform: str) -> list[str] | None:

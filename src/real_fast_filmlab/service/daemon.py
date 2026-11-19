@@ -20,6 +20,10 @@ from real_fast_filmlab.fileio.lock import file_lock
 
 log = logging.getLogger(__name__)
 
+NOT_INSTALLED = "Dienst nicht eingerichtet."
+RUNNING = "Dienst eingerichtet und läuft."
+NOT_RUNNING = "Dienst eingerichtet, läuft aber nicht."
+
 LABEL = "io.github.jcmx9.rffilmlab"
 UNIT_NAME = "rffilmlab.service"
 STARTUP_SCRIPT = "rffilmlab.vbs"
@@ -159,7 +163,7 @@ def install(
                         check=True,
                         capture_output=True,
                     )
-                    return f"Service installed and started ({target})."
+                    return f"Dienst eingerichtet und gestartet ({target})."
                 except subprocess.CalledProcessError as exc:
                     last_exc = exc
                     if attempt < 2:
@@ -171,7 +175,7 @@ def install(
                 else "(no stderr)"
             )
             raise ServiceError(
-                f"launchctl bootstrap failed: {stderr_text}"
+                f"Der Dienst ließ sich nicht starten (launchctl): {stderr_text}"
             ) from last_exc
         if platform.startswith("linux"):
             target = _unit_path(home)
@@ -192,7 +196,7 @@ def install(
                 check=True,
                 capture_output=True,
             )
-            return f"Service installed and started ({target})."
+            return f"Dienst eingerichtet und gestartet ({target})."
         if platform == "win32":
             target = _startup_path(home)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -202,11 +206,12 @@ def install(
             if not watcher_running():  # never a second watcher beside it
                 runner(["wscript", str(target)], check=False, capture_output=True)
             return (
-                f"Service installed and started; it starts at every login ({target})."
+                "Dienst eingerichtet und gestartet; er startet bei jeder "
+                f"Anmeldung ({target})."
             )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise ServiceError(f"service installation failed: {exc}") from exc
-    raise ServiceError(f"unsupported platform: {platform}")
+        raise ServiceError(f"Der Dienst ließ sich nicht einrichten: {exc}") from exc
+    raise ServiceError(f"Nicht unterstütztes Betriebssystem: {platform}")
 
 
 def uninstall(
@@ -226,7 +231,7 @@ def uninstall(
                 capture_output=True,
             )
             target.unlink(missing_ok=True)
-            return "Service removed."
+            return "Dienst entfernt."
         if platform.startswith("linux"):
             runner(
                 ["systemctl", "--user", "disable", "--now", UNIT_NAME],
@@ -239,14 +244,14 @@ def uninstall(
                 check=False,
                 capture_output=True,
             )
-            return "Service removed."
+            return "Dienst entfernt."
         if platform == "win32":
             _startup_path(home).unlink(missing_ok=True)
             request_stop()
-            return "Service removed; a running instance stops after its current batch."
+            return "Dienst entfernt; ein laufender endet nach seinem aktuellen Lauf."
     except OSError as exc:
-        raise ServiceError(f"service removal failed: {exc}") from exc
-    raise ServiceError(f"unsupported platform: {platform}")
+        raise ServiceError(f"Der Dienst ließ sich nicht entfernen: {exc}") from exc
+    raise ServiceError(f"Nicht unterstütztes Betriebssystem: {platform}")
 
 
 def installed(*, platform: str = sys.platform, home: Path | None = None) -> bool:
@@ -299,28 +304,24 @@ def status(
             "win32": _startup_path,
         }.get(platform, _unit_path)(home).exists()
         return (
-            f"Service files found ({paths.HOME_ENV}: service commands are not run)."
+            f"Dienstdateien vorhanden ({paths.HOME_ENV}: Dienstbefehle laufen nicht)."
             if installed
-            else "Service not installed."
+            else NOT_INSTALLED
         )
     runner = runner or _default_runner()
     if platform == "darwin":
         if not _plist_path(home).exists():
-            return "Service not installed."
+            return NOT_INSTALLED
         done = runner(
             ["launchctl", "print", f"gui/{_uid()}/{LABEL}"],
             check=False,
             capture_output=True,
             text=True,
         )
-        return (
-            "Service installed and running."
-            if done.returncode == 0
-            else "Service installed but not running."
-        )
+        return RUNNING if done.returncode == 0 else NOT_RUNNING
     if platform.startswith("linux"):
         if not _unit_path(home).exists():
-            return "Service not installed."
+            return NOT_INSTALLED
         done = runner(
             ["systemctl", "--user", "is-active", UNIT_NAME],
             check=False,
@@ -328,16 +329,12 @@ def status(
             text=True,
         )
         running = str(done.stdout).strip() == "active"
-        return (
-            "Service installed and running."
-            if running
-            else "Service installed but not running."
-        )
+        return RUNNING if running else NOT_RUNNING
     if platform == "win32":
         if _startup_path(home).exists():
-            return "Service installed (starts at login)."
-        return "Service not installed."
-    raise ServiceError(f"unsupported platform: {platform}")
+            return "Dienst eingerichtet (startet bei der Anmeldung)."
+        return NOT_INSTALLED
+    raise ServiceError(f"Nicht unterstütztes Betriebssystem: {platform}")
 
 
 def _uid() -> int:

@@ -98,10 +98,29 @@ def group_by_signature(
     return [labels.setdefault(find(i), len(labels)) for i in range(len(signatures))]
 
 
-def decide(
+def roll_frames(
     analyses: Sequence[FrameAnalysis], settings: RollSettings
+) -> list[FrameGeometry | None]:
+    """The roll's frame size per frame where it replaces the frame's own.
+
+    None where the frame's own stands (see _roll_geometry). A frame that
+    gets another one has to be measured again in it before `decide`: white
+    point, colour/BW, crossover and look belong to the final crop.
+    """
+    groups = group_by_signature([a.signature for a in analyses], settings.hue_tol)
+    return _roll_geometry(analyses, groups)
+
+
+def decide(
+    analyses: Sequence[FrameAnalysis],
+    settings: RollSettings,
+    frames: Sequence[FrameGeometry | None] | None = None,
 ) -> list[RollDecision]:
     """Choose film base, white point, crossover, frame and look per frame.
+
+    `frames` are the frames `roll_frames` gave for analyses that were
+    measured again since (their own frame then is the roll's already);
+    without it they are determined here.
 
     Film base: a high-key frame borrows the roll baseline. White point: its
     level stays the frame's own, its colour (the ratio of the channels)
@@ -153,7 +172,7 @@ def decide(
         look_stats_for(analysis, k)
         for analysis, (k, _) in zip(analyses, crossover, strict=True)
     ]
-    geometries = _roll_geometry(analyses, groups)
+    geometries = _roll_geometry(analyses, groups) if frames is None else frames
     decisions: list[RollDecision] = []
     for index, group in enumerate(groups):
         regular = [

@@ -5,12 +5,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [26.11.2] - 2026-11-19
+
+### Added
+- The background service reports a batch that fails for an unforeseen reason once as a notification (details in the log) and keeps trying
+- The background service reports once that changed folders apply only after it restarts
+- `scripts/release.sh <version>` sets the version in every file and checks it; it commits, tags and pushes nothing
+
+### Changed
+- A frame that gets the frame size of the roll is measured again in that frame: white point, colour/BW, crossover and look statistics come from the final crop and its inner window
+- On a file system without lock support (some network drives) the folder lock is taken in the program data of the computer, so a manual run and the background service on the same computer still exclude each other
+- Notifications: after errors they name the place of the reasons („… – Details in Negative/_Fehler“); when files stayed because of the surroundings they show that reason once, with its counts, and after a full disk the background service adds that it goes on by itself; the messages call the configured folder by its name
+- Configuration errors are reported in plain German with the key and what is allowed (e.g. „Ungültige Einstellung: rotate: erlaubt sind 0, 90, 180 oder 270“); a file that is not valid TOML is reported with line and column
+- Folder errors show the question before the path („Ordner nicht erreichbar – ist das Laufwerk angeschlossen? (<path>)“) and carry no English addition; the technical detail is in the log
+- Console output, command help and service status are German (`N umgewandelt, M fehlgeschlagen`, `Neue Version X verfügbar: …`, `Dienst eingerichtet und läuft.`); the line prefix `Error:` and the `--summary` lines stay as they are
+- The double-click starters say „Es gab ein Problem – siehe oben.“ instead of „Fertig.“ after a failed run
+- The header of the configuration file says that changed folders apply to the background service only after it restarts
+
+### Fixed
+- An extremely narrow film area (about 50:1) no longer ends the analysis with an error: the crop is pulled in only as far as its shorter side leaves a pixel
+- Windows: a stop request that cannot be removed no longer ends the background service with an error
+
 ## [26.11.1] - 2026-11-18
 
 ### Changed
 - The project is called `real-fast-filmlab`, the command `rffilmlab`; folders, service and launchers carry this name
 
-## [26.11.0] - 2026-11-15
+## 26.11.0 - 2026-11-15
 
 ### Added
 - Base look for every picture: keys `contrast` (0.30) and `saturation` (1.15); the measured correction for flat or pale rolls is added on top
@@ -44,7 +65,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Windows: an update with the background service running was refused as if a conversion were in progress
 
-## [26.10.9] - 2026-10-12
+## 26.10.9 - 2026-10-12
 
 ### Changed
 - A folder or drive that disappears during a batch (e.g. a disconnected external drive) stops the batch like a full disk; outputs are never written into a missing folder (it is not recreated): the remaining RAW files stay untouched in `Negative/`, finished files stay finished, nothing goes to `_Fehler`; the notice reads „Ordner oder Laufwerk nicht mehr erreichbar – ist das Laufwerk angeschlossen?“; the background service retries these files once the folders are reachable again
@@ -52,7 +73,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - After a full disk stopped a batch, the background service starts the next batch once the drive of the photos folder has at least 1 GB more free or after 10 minutes and retries the remaining RAW files automatically
 - Updates on macOS and Linux stop the background service while the program is replaced and start it again afterwards, also when the update fails; an update is refused while „Negative entwickeln“ is running, and nothing is changed
 
-## [26.10.8] - 2026-10-10
+## 26.10.8 - 2026-10-10
 
 ### Added
 - Switches `tiff`, `contact_sheet`, `service` and `update_check` (all `true` by default, like `dng`); the JPEG is always written
@@ -72,7 +93,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `holder_min` larger than `holder_delta` is accepted: the effective value is max(0.3, min(holder_min, holder_delta))
 - The config comment of `parallel_jobs` names the automatic value of the computer
 
-## [26.10.7] - 2026-10-10
+## 26.10.7 - 2026-10-10
 
 ### Added
 - Program „Negative entwickeln“ created by the installer (macOS `~/Applications`, Windows Start menu, Linux application menu): processes the `Negative` folder once, shows a short start notice and then the result in a dialog
@@ -98,7 +119,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - macOS: files the Finder is still copying are not processed before the copy has finished
 - Metadata from a DNG input never overwrites the DNG colour and rendering tags of our DNG (camera model, colour matrices, profiles, calibration, levels, crop)
 
-## [26.10.6] - 2026-10-09
+## 26.10.6 - 2026-10-09
 
 First public release.
 
@@ -113,10 +134,6 @@ First public release.
 - TOML configuration with `rffilmlab config init`, expert thresholds and the `RFFILMLAB_HOME` variable for isolated development runs
 - Camera metadata copied with exiftool when available
 
-[Unreleased]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.1...HEAD
-[26.11.1]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.0...v26.11.1
-[26.11.0]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.10.9...v26.11.0
-[26.10.9]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.10.8...v26.10.9
-[26.10.8]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.10.7...v26.10.8
-[26.10.7]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.10.6...v26.10.7
-[26.10.6]: https://github.com/jcmx9/real-fast-filmlab/releases/tag/v26.10.6
+[Unreleased]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.2...HEAD
+[26.11.2]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.1...v26.11.2
+[26.11.1]: https://github.com/jcmx9/real-fast-filmlab/releases/tag/v26.11.1

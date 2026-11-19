@@ -1,6 +1,7 @@
 """Pydantic configuration with TOML loading and per-OS default locations."""
 
 import logging
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import ErrorDetails
 
 from real_fast_filmlab import paths
 from real_fast_filmlab.core.analyzer import AnalyzerSettings
@@ -135,14 +137,14 @@ class Config(BaseModel):
         """Resolved (negative, archive, photos); all set and pairwise different."""
         missing = [name for name in DIR_FIELDS if getattr(self, name) is None]
         if missing:
-            raise ConfigError("folders not configured: " + ", ".join(missing))
+            raise ConfigError("Ordner nicht eingestellt: " + ", ".join(missing))
         negative, archive, photos = (
             Path(getattr(self, n)).resolve() for n in DIR_FIELDS
         )
         if len({negative, archive, photos}) < 3:
             raise ConfigError(
-                "negative_dir, archive_dir and photos_dir must be "
-                "three different folders"
+                "negative_dir, archive_dir und photos_dir müssen drei "
+                "verschiedene Ordner sein"
             )
         return negative, archive, photos
 
@@ -186,9 +188,11 @@ def load_config(path: Path) -> Config:
     try:
         raw_data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+        log.info("Invalid TOML in %s: %s", path, exc)
+        raise ConfigError(syntax_error(exc)) from exc
     except (OSError, UnicodeDecodeError) as exc:
-        raise ConfigError(f"cannot read {path}: {exc}") from exc
+        log.info("Cannot read %s: %s", path, exc)
+        raise ConfigError("Die Konfigurationsdatei ist nicht lesbar.") from exc
     data: dict[str, Any] = dict(raw_data)
     for key in IGNORED_KEYS:
         if data.pop(key, None) is not None:
@@ -196,12 +200,55 @@ def load_config(path: Path) -> Config:
     try:
         return Config.model_validate(data)
     except ValidationError as exc:
-        raise ConfigError(f"invalid config in {path}: {format_errors(exc)}") from exc
+        raise ConfigError(format_errors(exc)) from exc
+
+
+def syntax_error(exc: tomllib.TOMLDecodeError) -> str:
+    """Plain German text for a file that is not valid TOML, with the line."""
+    match = re.search(r"at line (\d+), column (\d+)", str(exc))
+    where = f" (Zeile {match[1]}, Spalte {match[2]})" if match else ""
+    return f"Schreibfehler in der Konfigurationsdatei{where}."
 
 
 def format_errors(exc: ValidationError) -> str:
-    """Pydantic errors as one readable line: `key: message; ...`."""
-    return "; ".join(
-        f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+    """Pydantic errors as one plain German line: `Ungültige Einstellung: key: ...`."""
+    return "Ungültige Einstellung: " + "; ".join(
+        f"{'.'.join(str(part) for part in err['loc'])}: {_plain(err)}"
         for err in exc.errors()
     )
+
+
+def _number(value: object) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _plain(err: ErrorDetails) -> str:
+    """German text for one pydantic error; unknown kinds keep pydantic's text."""
+    kind = err["type"]
+    ctx = err.get("ctx", {})
+    if kind == "extra_forbidden":
+        return "unbekannter Schlüssel"
+    if kind == "literal_error":
+        return "erlaubt sind " + str(ctx["expected"]).replace(" or ", " oder ")
+    if kind in _BOUNDS:
+        bound, text = _BOUNDS[kind]
+        return text.format(_number(ctx[bound]))
+    for prefix, text in _TYPES:
+        if kind.startswith(prefix):
+            return text
+    return err["msg"]
+
+
+_BOUNDS = {
+    "greater_than": ("gt", "muss größer als {} sein"),
+    "greater_than_equal": ("ge", "muss mindestens {} sein"),
+    "less_than": ("lt", "muss kleiner als {} sein"),
+    "less_than_equal": ("le", "darf höchstens {} sein"),
+}
+_TYPES = (
+    ("bool_", "muss true oder false sein"),
+    ("int_", "muss eine ganze Zahl sein"),
+    ("float_", "muss eine Zahl sein"),
+    ("path_", "muss ein Text in Anführungszeichen sein"),
+    ("string_", "muss ein Text in Anführungszeichen sein"),
+)

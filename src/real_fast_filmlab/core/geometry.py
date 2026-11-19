@@ -147,16 +147,21 @@ class FrameGeometry:
         )
 
     def crop_rect(self, shape: tuple[int, int], inset: float = 0.01) -> Rect:
-        """Return the frame for an image of `shape`, pulled inwards by `inset`."""
+        """Return the frame for an image of `shape`, pulled inwards by `inset`.
+
+        `inset` is a fraction of the longer side; a very narrow frame is
+        pulled in only as far as its shorter side leaves a pixel.
+        """
         scale = shape[1] / self.source_shape[1]
         cx, cy = self.center[0] * scale, self.center[1] * scale
         width, height = self.size[0] * scale, self.size[1] * scale
-        pad = inset * max(width, height)
+        pad = min(inset * max(width, height), max(0.0, (min(width, height) - 1.0) / 2))
+        top, left = round(cy - height / 2 + pad), round(cx - width / 2 + pad)
         rect = Rect(
-            round(cy - height / 2 + pad),
-            round(cx - width / 2 + pad),
-            round(cy + height / 2 - pad),
-            round(cx + width / 2 - pad),
+            top,
+            left,
+            max(top + 1, round(cy + height / 2 - pad)),
+            max(left + 1, round(cx + width / 2 - pad)),
         )
         return rect.clamp(shape[0], shape[1])
 

@@ -17,12 +17,12 @@ All dev runs use their own app folder so a real installation is never touched: `
 
 ## Workflow
 
-1. Branch from `dev`: `git checkout -b feature/<short-desc> dev`
+1. Branch from `main`: `git checkout -b feature/<short-desc> main`
 2. Implement + docs
 3. `uv run ruff check --fix . && uv run ruff format .`
 4. `uv run mypy src/`
 5. Conventional Commit message (`feat: ...`, `fix: ...`)
-6. PR targeting `dev`
+6. PR targeting `main`
 
 The test suite is maintained separately and is not published; the maintainer runs it against your PR.
 

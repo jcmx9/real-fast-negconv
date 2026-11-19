@@ -55,7 +55,7 @@ Issues = "https://github.com/jcmx9/real-fast-filmlab/issues"
 path = "src/real_fast_filmlab/__init__.py"
 
 [tool.bumpversion]
-current_version = "26.11.1"
+current_version = "26.11.2"
 commit = true
 tag = true
 tag_name = "v{new_version}"

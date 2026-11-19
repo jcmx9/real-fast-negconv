@@ -36,6 +36,11 @@ MAX_BACKOFF = 60.0
 DISK_FULL_PAUSE = 600.0
 # ... or until at least this much more space is free than at the stop
 DISK_FULL_RESUME_BYTES = 1024**3
+UNEXPECTED_MESSAGE = (
+    "Unerwarteter Fehler bei der automatischen Verarbeitung – die Negative "  # noqa: RUF001  # German typographic dash is intended
+    "bleiben liegen, der nächste Versuch folgt von selbst. Bleibt es dabei, "
+    "hilft das Protokoll weiter."
+)
 
 
 class _WakeHandler(FileSystemEventHandler):
@@ -138,6 +143,15 @@ class _Reported:
         if self._on_problem is not None:
             self._on_problem(message)
 
+    def unexpected(self, exc: Exception, backoff: float) -> None:
+        """Any other failure of a batch: log with traceback and notify once."""
+        if not self.is_new(technical_reason(exc)):
+            log.debug("Batch failed again: %s", exc)
+            return
+        log.error("Batch failed; retrying every %.0f s", backoff, exc_info=exc)
+        if self._on_problem is not None:
+            self._on_problem(UNEXPECTED_MESSAGE)
+
     def clear(self) -> None:
         self._last = None
 
@@ -228,7 +242,8 @@ def watch(
 
     `on_batch` gets every batch result except a repeat of the previous
     batch's problem without any success (one notice per condition);
-    `on_problem` gets a plain message once when a folder becomes unusable.
+    `on_problem` gets a plain message once when a folder becomes unusable or
+    a batch fails for a reason nobody foresaw (it is tried again).
     `before_batch` runs right before each batch (self-check), `after_batch`
     after each batch that was not skipped as busy. `current_config` gives
     the config for each batch and each wait (re-read by the caller): its
@@ -314,10 +329,7 @@ def watch(
                 stop.wait(backoff)
                 wake.set()
             except Exception as exc:
-                if reported.is_new(technical_reason(exc)):
-                    log.exception("Batch failed; retrying every %.0f s", backoff)
-                else:
-                    log.debug("Batch failed again: %s", exc)
+                reported.unexpected(exc, backoff)
                 stop.wait(backoff)
                 wake.set()
     finally:

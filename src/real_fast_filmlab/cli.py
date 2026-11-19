@@ -51,19 +51,23 @@ CONFIG_RETRY_SECONDS = 10.0  # background watcher: wait for a corrected config
 # a watcher that was asked to end may still hold the lock for a moment
 WATCHER_LOCK_ATTEMPTS = 10
 WATCHER_LOCK_WAIT_SECONDS = 0.5
+FOLDERS_CHANGED_MESSAGE = (
+    "Die geänderten Ordner gelten erst nach einem Neustart des Dienstes – "  # noqa: RUF001  # German typographic dash is intended
+    "bis dahin arbeitet er mit den bisherigen Ordnern weiter."
+)
 
 app = typer.Typer(
     name="rffilmlab",
     help=(
-        f"Convert RAW scans of film negatives into DNG, TIFF and JPEG (v{__version__})"
+        f"RAW-Scans von Filmnegativen in DNG, TIFF und JPEG umwandeln (v{__version__})"
     ),
     add_completion=False,
 )
-service_app = typer.Typer(
-    help="Manage the background watch-folder service.", no_args_is_help=True
-)
+service_app = typer.Typer(help="Den Hintergrunddienst verwalten.", no_args_is_help=True)
 app.add_typer(service_app, name="service")
-config_app = typer.Typer(help="Manage the config file.", no_args_is_help=True)
+config_app = typer.Typer(
+    help="Die Konfigurationsdatei verwalten.", no_args_is_help=True
+)
 app.add_typer(config_app, name="config")
 
 
@@ -94,7 +98,7 @@ def setup_logging(
             encoding="utf-8",
         )
     except OSError as exc:
-        typer.echo(f"Warning: cannot write log file in {log_dir}: {exc}", err=True)
+        typer.echo(f"Warnung: Kein Protokoll in {log_dir} möglich: {exc}", err=True)
     else:
         file_handler.setLevel(logging.DEBUG if verbosity >= 3 else logging.INFO)
         file_handler.setFormatter(
@@ -126,20 +130,20 @@ def main(
             "-V",
             callback=_version_callback,
             is_eager=True,
-            help="Show version and exit.",
+            help="Version anzeigen und beenden.",
         ),
     ] = False,
     config: Annotated[
-        Path | None, typer.Option("--config", help="Config file path.")
+        Path | None, typer.Option("--config", help="Pfad der Konfigurationsdatei.")
     ] = None,
     silent: Annotated[
-        bool, typer.Option("--silent", "-Q", help="No console output.")
+        bool, typer.Option("--silent", "-Q", help="Keine Konsolenausgabe.")
     ] = False,
     verbose: Annotated[
-        bool, typer.Option("--verbose", "-v", help="More output.")
+        bool, typer.Option("--verbose", "-v", help="Mehr Ausgabe.")
     ] = False,
     debug: Annotated[
-        bool, typer.Option("--debug", "-vv", help="Debug output.")
+        bool, typer.Option("--debug", "-vv", help="Debug-Ausgabe.")
     ] = False,
 ) -> None:
     """Without a command: process everything in the Negative folder once."""
@@ -153,26 +157,26 @@ def main(
         _run(state, {})
 
 
-@app.command()
+@app.command(help="Alles im Eingangsordner einmal verarbeiten.")
 def run(
     ctx: typer.Context,
     negative: Annotated[
-        Path | None, typer.Option("--negative", help="Input folder.")
+        Path | None, typer.Option("--negative", help="Eingangsordner.")
     ] = None,
     archive: Annotated[
-        Path | None, typer.Option("--archive", help="Archive folder.")
+        Path | None, typer.Option("--archive", help="Archivordner.")
     ] = None,
     photos: Annotated[
-        Path | None, typer.Option("--photos", help="Output folder.")
+        Path | None, typer.Option("--photos", help="Ausgabeordner.")
     ] = None,
     dng: Annotated[
-        bool | None, typer.Option("--dng/--no-dng", help="Write DNG files.")
+        bool | None, typer.Option("--dng/--no-dng", help="DNG-Dateien schreiben.")
     ] = None,
     dng_finder_preview: Annotated[
         bool | None,
         typer.Option(
             "--dng-finder-preview/--no-dng-finder-preview",
-            help="Write uint16 DNG so Finder / Quick Look show previews (larger).",
+            help="Größeres DNG schreiben, das Finder und Quick Look anzeigen.",
         ),
     ] = None,
     summary: Annotated[
@@ -180,9 +184,10 @@ def run(
         typer.Option(
             "--summary",
             help=(
-                "Print one line 'processed=<n> failed=<m> busy=<0|1>' for "
-                "launchers; exit 1 if the run cannot start or files stayed in "
-                "the Negative folder (disk full, permissions)."
+                "Für Starter: gibt die Zeile 'processed=<n> failed=<m> "
+                "busy=<0|1>' aus; Exit-Code 1, wenn der Lauf nicht starten kann "
+                "oder Dateien im Eingangsordner blieben (Speicher voll, "
+                "Berechtigungen)."
             ),
         ),
     ] = False,
@@ -198,7 +203,12 @@ def run(
     _run(ctx.obj, overrides, summary=summary)
 
 
-@app.command()
+@app.command(
+    help=(
+        "Weiterlaufen und neue Dateien verarbeiten, sobald sie eintreffen. "
+        "Pro Benutzer läuft nur eine Überwachung; eine zweite endet sofort."
+    )
+)
 def watch(ctx: typer.Context) -> None:
     """Keep running and process new files as they arrive.
 
@@ -225,6 +235,7 @@ def watch(ctx: typer.Context) -> None:
 def _watch(state: State, cfg: Config, stop: threading.Event) -> None:
     active = cfg  # the config of the next batch, re-read before each batch
     config_problem: str | None = None
+    folders_changed = False  # told once until the file names the old ones again
 
     def on_problem(message: str) -> None:
         if active.notify:
@@ -232,8 +243,9 @@ def _watch(state: State, cfg: Config, stop: threading.Event) -> None:
 
     def reload() -> None:
         """Switches take effect at the next batch; a broken file keeps the last
-        good config (reported once); folder changes need a restart."""
-        nonlocal active, config_problem
+        good config (reported once); folder changes need a restart (reported
+        once)."""
+        nonlocal active, config_problem, folders_changed
         try:
             fresh = load_config(state.config_path)
             fresh.require_dirs()
@@ -248,8 +260,12 @@ def _watch(state: State, cfg: Config, stop: threading.Event) -> None:
                 on_problem(message)
             return
         config_problem = None
-        if fresh.require_dirs() != cfg.require_dirs():
+        changed = fresh.require_dirs() != cfg.require_dirs()
+        if changed and not folders_changed:
             log.warning("Changed folders take effect when the service restarts")
+            on_problem(FOLDERS_CHANGED_MESSAGE)
+        folders_changed = changed
+        if changed:
             fresh = fresh.model_copy(
                 update={name: getattr(cfg, name) for name in DIR_FIELDS}
             )
@@ -273,7 +289,9 @@ def _watch(state: State, cfg: Config, stop: threading.Event) -> None:
     try:
         watch_folder(
             cfg,
-            on_batch=lambda result: _report(active, state.verbosity, result),
+            on_batch=lambda result: _report(
+                active, state.verbosity, result, service=True
+            ),
             on_problem=on_problem,
             before_batch=before_batch,
             after_batch=after_batch,
@@ -327,7 +345,10 @@ def _stop_requested() -> bool:
     """True once the service was switched off where no service manager stops it."""
     if not daemon.stop_request_path().exists():
         return False
-    daemon.withdraw_stop()
+    try:
+        daemon.withdraw_stop()
+    except OSError as exc:  # the request counts even if it cannot be removed
+        log.warning("Stop request could not be removed: %s", exc)
     return True
 
 
@@ -359,25 +380,29 @@ def _await_config(state: State, stop: threading.Event) -> Config | None:
     return None
 
 
-@service_app.command("install")
+@service_app.command(
+    "install", help="Die automatische Verarbeitung bei jeder Anmeldung starten."
+)
 def service_install() -> None:
     """Start the watch folder automatically at login."""
     _service(lambda: daemon.install(log_dir=default_log_dir()))
 
 
-@service_app.command("uninstall")
+@service_app.command("uninstall", help="Den Hintergrunddienst entfernen.")
 def service_uninstall() -> None:
     """Remove the background service."""
     _service(daemon.uninstall)
 
 
-@service_app.command("status")
+@service_app.command(
+    "status", help="Zeigen, ob der Hintergrunddienst eingerichtet ist und läuft."
+)
 def service_status(ctx: typer.Context) -> None:
     """Show whether the background service is installed and running."""
     _service(
         lambda: (
-            f"{daemon.status()}\nLog file: {default_log_dir() / LOG_FILE_NAME}"
-            f"\nRun log file: {default_log_dir() / RUN_LOG_FILE_NAME}"
+            f"{daemon.status()}\nProtokoll: {default_log_dir() / LOG_FILE_NAME}"
+            f"\nProtokoll der Einzelläufe: {default_log_dir() / RUN_LOG_FILE_NAME}"
             f"\n{_exiftool_line(ctx.obj)}"
         )
     )
@@ -390,27 +415,40 @@ def _exiftool_line(state: State) -> str:
         configured = None
     tool = ExifTool.locate(configured)
     if tool.executable is None:
-        return "exiftool: not found (outputs carry no camera metadata)"
+        return "exiftool: nicht gefunden (die Fotos bekommen keine Kameradaten)"
     return f"exiftool: {tool.executable}"
 
 
-@config_app.command("init")
+@config_app.command(
+    "init",
+    help=(
+        "Die vollständige Konfigurationsdatei schreiben oder fehlende Schlüssel "
+        "ergänzen und die Ordner anlegen. Vorhandene Werte bleiben, wie sie "
+        "sind. Gibt Zeilen der Form schlüssel=wert aus (config, status, "
+        "negative, photos, archive und jeden Schalter); status ist created, "
+        "completed (Datei geändert) oder kept."
+    ),
+)
 def config_init(
     ctx: typer.Context,
-    negative: Annotated[Path, typer.Option("--negative", help="Input folder.")],
-    photos: Annotated[Path, typer.Option("--photos", help="Output folder.")],
-    archive: Annotated[Path, typer.Option("--archive", help="Archive folder.")],
+    negative: Annotated[Path, typer.Option("--negative", help="Eingangsordner.")],
+    photos: Annotated[Path, typer.Option("--photos", help="Ausgabeordner.")],
+    archive: Annotated[Path, typer.Option("--archive", help="Archivordner.")],
     off: Annotated[
         list[str] | None,
         typer.Option(
             "--off",
-            help=f"Set this switch to false (repeatable): {', '.join(SWITCHES)}.",
+            help=(
+                "Diesen Schalter auf false setzen (wiederholbar): "
+                f"{', '.join(SWITCHES)}."
+            ),
         ),
     ] = None,
     expert_reset: Annotated[
         bool,
         typer.Option(
-            "--expert-reset", help="Set every expert threshold to its default."
+            "--expert-reset",
+            help="Jede Experten-Schwelle auf ihren Standardwert setzen.",
         ),
     ] = False,
 ) -> None:
@@ -440,7 +478,7 @@ def config_init(
         for folder in (negative_dir, photos_dir, archive_dir):
             folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        _fail(state, ConfigError(f"cannot set up folders: {exc}"))
+        _fail(state, ConfigError(f"Die Ordner lassen sich nicht anlegen: {exc}"))
     except RfFilmlabError as exc:
         _fail(state, exc)
     typer.echo(f"config={path}")
@@ -493,7 +531,7 @@ def _run(state: State, overrides: dict[str, Any], *, summary: bool = False) -> N
         if summary:
             typer.echo(f"update={latest}")
         else:
-            typer.echo(f"New version {latest} available: {update.UPDATE_URL}")
+            typer.echo(f"Neue Version {latest} verfügbar: {update.UPDATE_URL}")
         update.mark_notified(RUN_CHANNEL, latest)  # a silent run tells nobody
     try:
         result = run_batch(cfg)
@@ -545,9 +583,13 @@ def summary_line(result: BatchResult) -> str:
     )
 
 
-def _report(cfg: Config, verbosity: int, result: BatchResult) -> None:
+def _report(
+    cfg: Config, verbosity: int, result: BatchResult, *, service: bool = False
+) -> None:
     if verbosity >= 1:
-        typer.echo(f"{len(result.succeeded)} converted, {len(result.failed)} failed")
+        typer.echo(
+            f"{len(result.succeeded)} umgewandelt, {len(result.failed)} fehlgeschlagen"
+        )
         for path, reason in result.failed:
             typer.echo(f"  {path.name}: {reason}", err=True)
         problem = problem_message(result)
@@ -556,10 +598,10 @@ def _report(cfg: Config, verbosity: int, result: BatchResult) -> None:
         for hint in result.hints:
             typer.echo(hint, err=True)
     if cfg.notify and (result.succeeded or result.failed):
-        notify(*summary_message(result))
+        notify(*summary_message(result, service=service))
 
 
 def _fail(state: State, exc: RfFilmlabError) -> NoReturn:
     typer.echo(f"Error: {exc}", err=True)
-    typer.echo(f"Config file: {state.config_path}", err=True)
+    typer.echo(f"Konfigurationsdatei: {state.config_path}", err=True)
     raise typer.Exit(1) from exc

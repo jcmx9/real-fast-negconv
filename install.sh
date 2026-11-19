@@ -37,7 +37,7 @@
 #             130 interrupted (Ctrl-C, closed terminal).
 set -eu
 
-RFFILMLAB_VERSION="26.11.1"
+RFFILMLAB_VERSION="26.11.2"
 APP_NAME="real-fast-filmlab"
 REPO_URL="https://github.com/jcmx9/real-fast-filmlab"
 RAW_URL="https://raw.githubusercontent.com/jcmx9/real-fast-filmlab"

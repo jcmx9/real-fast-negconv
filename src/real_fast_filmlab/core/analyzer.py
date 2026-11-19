@@ -158,6 +158,7 @@ def analyze(
     settings: AnalyzerSettings,
     xyz_to_cam: npt.NDArray[np.floating] | None = None,
     exposure: float | None = None,
+    frame: FrameGeometry | None = None,
 ) -> FrameAnalysis:
     """Detect the frame and measure film base, white point, colour/BW and look.
 
@@ -166,10 +167,16 @@ def analyze(
     The white point and the samples for crossover and look are measured in
     the inner window (measure_inset); bright picture parts near the border
     of a confident crop may raise the white point a little (see _edge_white).
+
+    `frame` replaces the detected frame (the roll's frame size, fitted to
+    this picture's preview): everything measured in the crop or its inner
+    window then belongs to that frame. The film base does not depend on it.
     """
     stride = max(1, max(rgb.shape[:2]) // PREVIEW_EDGE)
     density = to_density(rgb[::stride, ::stride])
     geometry, film = detect_frame(density.mean(axis=2), settings)
+    if frame is not None:
+        geometry = frame
     density = deskew(density, geometry.angle_deg)
     d_min = _triple(np.percentile(density[film], settings.dmin_percentile, axis=0))
     crop_rect = geometry.crop_rect(film.shape)

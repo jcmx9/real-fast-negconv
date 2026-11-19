@@ -42,7 +42,7 @@ $script:CallerProgress = $ProgressPreference
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is very slow with progress in 5.1
 
-$script:Version = '26.11.1'
+$script:Version = '26.11.2'
 $script:AppName = 'real-fast-filmlab'
 $script:RepoUrl = 'https://github.com/jcmx9/real-fast-filmlab'
 $script:RawUrl = 'https://raw.githubusercontent.com/jcmx9/real-fast-filmlab'

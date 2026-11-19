@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
+from real_fast_filmlab import paths
 from real_fast_filmlab.config import Config
 from real_fast_filmlab.core.analyzer import (
     EMPTY_LOOK_SAMPLE,
@@ -23,6 +24,7 @@ from real_fast_filmlab.core.analyzer import (
     analyze,
 )
 from real_fast_filmlab.core.crossover import EMPTY_SAMPLE
+from real_fast_filmlab.core.geometry import FrameGeometry
 from real_fast_filmlab.core.metadata import CROP_REASON_MARKER
 from real_fast_filmlab.core.rolls import (
     ExposureFinding,
@@ -30,6 +32,7 @@ from real_fast_filmlab.core.rolls import (
     decide,
     exposure_findings,
     keystone_finding,
+    roll_frames,
 )
 from real_fast_filmlab.exceptions import EncodeError, FolderError, RawLoadError
 from real_fast_filmlab.fileio import flatfield, raw_loader
@@ -45,6 +48,7 @@ from real_fast_filmlab.system import automatic_workers
 log = logging.getLogger(__name__)
 
 ERROR_DIR = "_Fehler"
+LOCK_DIR = "locks"  # app data: locks for folders whose drive cannot lock
 STALE_TEMP_SECONDS = 3600.0
 # leftovers of interrupted writes: ours (atomic_write, archive copy) and
 # exiftool's -overwrite_original
@@ -113,7 +117,8 @@ class BatchResult:
     `jpegs` are the JPEGs this batch wrote, `contact_sheets` its contact sheet(s).
     `hints` are plain German remarks about the scans as a whole (exposure);
     `notes` name, per JPEG, what the roll or an uncertain crop decided, for
-    the contact sheet.
+    the contact sheet. `folder` is the name of the Negative folder as the
+    messages show it.
     """
 
     succeeded: list[Path] = field(default_factory=list)
@@ -127,6 +132,7 @@ class BatchResult:
     contact_sheets: list[Path] = field(default_factory=list)
     hints: list[str] = field(default_factory=list)
     notes: dict[Path, str] = field(default_factory=dict)
+    folder: str = "Negative"
 
 
 def problem_message(result: BatchResult) -> str | None:
@@ -138,12 +144,12 @@ def problem_message(result: BatchResult) -> str | None:
     if result.stopped:
         return (
             f"{result.problem} Verarbeitung angehalten: {done} {photos} fertig, "
-            "die übrigen Negative bleiben im Ordner „Negative“."
+            f"die übrigen Negative bleiben im Ordner „{result.folder}“."
         )
     count = len(result.kept)
     noun = "Negativ bleibt" if count == 1 else "Negative bleiben"
     return (
-        f"{result.problem} {count} {noun} unverändert im Ordner „Negative“; "
+        f"{result.problem} {count} {noun} unverändert im Ordner „{result.folder}“; "
         f"{done} {photos} fertig."
     )
 
@@ -234,18 +240,22 @@ def environment_failure(exc: BaseException) -> BaseException | None:
 
 
 def folder_error(path: Path, exc: OSError) -> FolderError:
-    """Plain German/English error for a folder the batch cannot use."""
-    detail = exc.strerror or str(exc) or type(exc).__name__
+    """Plain German error for a folder the batch cannot use.
+
+    The question comes before the (possibly long) path, so a notification
+    that cuts the text still shows it. The technical detail goes to the log.
+    """
+    log.debug("Folder %s unusable: %s", path, technical_reason(exc))
     if exc.errno in DISK_FULL_ERRNOS:
-        text = f"Kein Speicherplatz mehr frei: {path} (disk full)"
+        text = f"Kein Speicherplatz mehr frei: {path}"
     elif isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM):
-        text = f"Keine Berechtigung für den Ordner: {path} (permission denied)"
+        text = f"Keine Berechtigung für den Ordner: {path}"
     elif exc.errno == errno.EROFS:
-        text = f"Der Ordner ist schreibgeschützt: {path} (read-only)"
+        text = f"Der Ordner ist schreibgeschützt: {path}"
     else:
         text = (
-            f"Ordner nicht erreichbar: {path} – ist das Laufwerk angeschlossen? "  # noqa: RUF001  # German typographic dash is intended
-            f"(folder not reachable: {detail})"
+            "Ordner nicht erreichbar – ist das Laufwerk angeschlossen? "  # noqa: RUF001  # German typographic dash is intended
+            f"({path})"
         )
     return FolderError(text)
 
@@ -406,7 +416,9 @@ def run_batch(
         ensure_folder(directory)
     with ExitStack() as stack:
         try:
-            acquired = stack.enter_context(folder_lock(negative))
+            acquired = stack.enter_context(
+                folder_lock(negative, fallback_dir=paths.data_dir() / LOCK_DIR)
+            )
         except OSError as exc:
             raise folder_error(negative, exc) from exc
         if not acquired:
@@ -428,6 +440,7 @@ def run_batch(
         except OSError as exc:
             raise folder_error(negative, exc) from exc
         result = _run_locked(cfg, negative, archive, photos, todo, stop)
+        result.folder = negative.name
         if cfg.contact_sheet and result.jpegs:
             try:
                 write_contact_sheet(
@@ -467,29 +480,51 @@ def _run_locked(
     def halted() -> bool:
         return stop.is_set() or (external_stop is not None and external_stop.is_set())
 
+    frames: dict[Path, FrameGeometry] = {}  # the roll's frame replaces the own
+
     def analyse(path: Path) -> FrameAnalysis | None:
         if halted():
             return None
         raw = raw_loader.load(path, half_size=True)
         flatfield.apply(raw, cfg.flatfield)
-        return analyze(raw.rgb, settings, raw.xyz_to_cam, raw.exposure)
+        return analyze(
+            raw.rgb, settings, raw.xyz_to_cam, raw.exposure, frame=frames.get(path)
+        )
 
     analyses: dict[Path, FrameAnalysis] = {}
-    for path, outcome in _parallel(workers, analyse, todo):
-        if isinstance(outcome, Exception):
-            _record_failure(result, path, folders, outcome)
-            if result.stopped:
-                stop.set()
-        elif outcome is not None:
-            analyses[path] = outcome
 
+    def analyse_all(paths: Sequence[Path]) -> None:
+        for path, outcome in _parallel(workers, analyse, paths):
+            if isinstance(outcome, Exception):
+                analyses.pop(path, None)
+                _record_failure(result, path, folders, outcome)
+                if result.stopped:
+                    stop.set()
+            elif outcome is not None:
+                analyses[path] = outcome
+
+    analyse_all(todo)
     if result.stopped or halted():
         return _finish_log(result)
     ordered = [p for p in todo if p in analyses]
+    roll_settings = cfg.roll_settings()
+    fitted = roll_frames([analyses[p] for p in ordered], roll_settings)
+    frames.update((p, frame) for p, frame in zip(ordered, fitted, strict=True) if frame)
+    if frames:
+        # white point, colour/BW, crossover and look belong to the final crop
+        log.info("Measuring %d file(s) again in the roll's frame", len(frames))
+        analyse_all(list(frames))
+        if result.stopped or halted():
+            return _finish_log(result)
+        ordered = [p for p in ordered if p in analyses]
     decisions = dict(
         zip(
             ordered,
-            decide([analyses[p] for p in ordered], cfg.roll_settings()),
+            decide(
+                [analyses[p] for p in ordered],
+                roll_settings,
+                [frames.get(p) for p in ordered],
+            ),
             strict=True,
         )
     )

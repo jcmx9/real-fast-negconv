@@ -1,11 +1,12 @@
 """Exclusive, non-blocking lock file so only one batch works on a folder."""
 
 import errno
+import hashlib
 import logging
 import os
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -15,19 +16,48 @@ _BUSY_ERRNOS = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
 
 
 @contextmanager
-def folder_lock(directory: Path) -> Iterator[bool]:
+def folder_lock(directory: Path, fallback_dir: Path | None = None) -> Iterator[bool]:
     """Hold `directory/.rffilmlab.lock`; yields False if another holder has it.
 
-    Filesystems without lock support (some network shares) yield True with a
-    warning: processing then works as it did without the lock.
+    On a file system without lock support (some network shares) the lock is
+    taken in `fallback_dir` instead, in a file named after the folder: runs
+    on this computer still exclude each other. Without `fallback_dir`, or if
+    that cannot be used either, it yields True with a warning: processing
+    then works without a lock.
     """
-    with file_lock(directory / LOCK_NAME) as acquired:
-        yield acquired
+    with _lock(directory / LOCK_NAME) as acquired:
+        if acquired is not None:
+            yield acquired
+            return
+    with ExitStack() as stack:
+        held = True
+        if fallback_dir is None:
+            log.warning("No folder lock for %s; continuing without", directory)
+        else:
+            name = hashlib.sha256(str(directory).encode()).hexdigest()[:16]
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                held = stack.enter_context(file_lock(fallback_dir / f"{name}.lock"))
+            except OSError as exc:
+                log.warning(
+                    "No folder lock for %s (%s); continuing without", directory, exc
+                )
+        yield held
 
 
 @contextmanager
 def file_lock(path: Path) -> Iterator[bool]:
-    """Hold the lock file `path`; yields False if another holder has it."""
+    """Hold the lock file `path`; yields False if another holder has it.
+
+    A file system without lock support yields True.
+    """
+    with _lock(path) as acquired:
+        yield acquired is not False
+
+
+@contextmanager
+def _lock(path: Path) -> Iterator[bool | None]:
+    """True: held; False: another holder has it; None: locks unsupported."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         acquired = _acquire(fd)
@@ -40,7 +70,7 @@ def file_lock(path: Path) -> Iterator[bool]:
         os.close(fd)
 
 
-def _acquire(fd: int) -> bool:
+def _acquire(fd: int) -> bool | None:
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -54,7 +84,8 @@ def _acquire(fd: int) -> bool:
     except OSError as exc:
         if exc.errno in _BUSY_ERRNOS:
             return False
-        log.warning("Folder lock not supported here (%s); continuing without", exc)
+        log.info("File locks not supported here (%s)", exc)
+        return None
     return True
 
 
