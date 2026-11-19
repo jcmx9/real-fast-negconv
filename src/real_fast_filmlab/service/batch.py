@@ -34,9 +34,18 @@ from real_fast_filmlab.core.rolls import (
     keystone_finding,
     roll_frames,
 )
-from real_fast_filmlab.exceptions import EncodeError, FolderError, RawLoadError
+from real_fast_filmlab.exceptions import (
+    EncodeError,
+    FolderError,
+    RawLoadError,
+    UnsupportedRawError,
+)
 from real_fast_filmlab.fileio import flatfield, raw_loader
-from real_fast_filmlab.fileio.atomic import TEMP_MARKER
+from real_fast_filmlab.fileio.atomic import (
+    TEMP_MARKER,
+    candidate_names,
+    claim_free_name,
+)
 from real_fast_filmlab.fileio.exiftool import ExifTool
 from real_fast_filmlab.fileio.lock import folder_lock
 from real_fast_filmlab.service import pending
@@ -49,6 +58,7 @@ log = logging.getLogger(__name__)
 
 ERROR_DIR = "_Fehler"
 LOCK_DIR = "locks"  # app data: locks for folders whose drive cannot lock
+NAME_ATTEMPTS = 5  # output names tried when others take them meanwhile
 STALE_TEMP_SECONDS = 3600.0
 # leftovers of interrupted writes: ours (atomic_write, archive copy) and
 # exiftool's -overwrite_original
@@ -95,6 +105,11 @@ EXPOSURE_HINTS: dict[ExposureFinding, str] = {
 KEYSTONE_HINT = (
     "Gegenüberliegende Bildkanten sind nicht parallel (um etwa {degrees:.1f}°): "
     "Die Kamera steht nicht genau senkrecht über dem Film."
+)
+FLATFIELD_MISFIT_HINT = (
+    "Die Flat-Field-Referenz hat ein anderes Seitenverhältnis als {count} der "
+    "Scans (andere Kamera oder Kamera gedreht): Diese Bilder wurden ohne sie "
+    "entwickelt."
 )
 # contact sheet: why a picture deserves a look
 NOTE_CROP_UNCERTAIN = "Beschnitt unsicher"
@@ -166,14 +181,14 @@ def list_inputs(negative_dir: Path) -> list[Path]:
 
 
 def unique_destination(directory: Path, name: str) -> Path:
-    """`directory/name`, or `stem_2.ext`, `stem_3.ext`, ... if taken."""
-    candidate = directory / name
-    stem, suffix = Path(name).stem, Path(name).suffix
-    n = 2
-    while candidate.exists():
-        candidate = directory / f"{stem}_{n}{suffix}"
-        n += 1
-    return candidate
+    """`directory/name`, or `stem_2.ext`, `stem_3.ext`, ... if taken.
+
+    Only a look: the name is not reserved (see atomic.claim_free_name).
+    """
+    for candidate in candidate_names(directory, name):
+        if not candidate.exists():
+            return candidate
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def technical_reason(exc: BaseException) -> str:
@@ -193,6 +208,11 @@ def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
 def plain_reason(exc: BaseException) -> str:
     """Plain German explanation of a failure (cause chain included)."""
     for current in _cause_chain(exc):
+        if isinstance(current, UnsupportedRawError):
+            return (
+                "Die Datei stammt von einer Kamera ohne Farbfilter "
+                "(Monochrom-Sensor); solche RAW-Dateien werden nicht unterstützt."
+            )
         if isinstance(current, RawLoadError) and environment_failure(current) is None:
             return "Die Datei ist keine lesbare RAW-Datei oder beschädigt."
         if isinstance(current, MemoryError):
@@ -319,28 +339,50 @@ def remove_stale_temp_files(
 def move_to_archive(source: Path, archive: Path) -> Path:
     """Move `source` into `archive` under a free name; returns the new path.
 
-    Within one drive this is a rename. Across drives the file is copied to a
-    hidden temp name in `archive`, flushed, renamed to its final name and only
-    then removed from its old place: an interrupted copy never leaves a
-    partial file under the real name, and the original is never lost.
+    The name is taken exclusively, so a file another run archives at the
+    same moment under the same name is never replaced. Within one drive the
+    file gets a second name there (hard link) and loses its old one; without
+    hard links (exFAT, some shares) the name is reserved by an empty file,
+    which the renamed original replaces. Across drives the file is copied to
+    a hidden temp name in `archive`, flushed, renamed onto the reserved name
+    and only then removed from its old place: an interrupted copy never
+    leaves a partial file under the real name, and the original is never
+    lost.
     """
-    destination = unique_destination(archive, source.name)
-    try:
-        os.rename(source, destination)
-        return destination
-    except OSError:
-        pass  # another drive (or rename refused): copy instead
+    for candidate in candidate_names(archive, source.name):
+        try:
+            os.link(source, candidate)
+        except FileExistsError:
+            continue  # taken: the next name
+        except FileNotFoundError:
+            raise  # the RAW or the archive is gone
+        except OSError:
+            break  # no hard links here, or another drive
+        try:
+            _remove_file(source)
+        except BaseException:
+            _remove_file(candidate)  # the original keeps its only name
+            raise
+        return candidate
+    destination = claim_free_name(archive, source.name)
     token = f"{os.getpid()}.{secrets.token_hex(4)}"
     tmp = archive / f".{source.name}{TEMP_MARKER}{token}"
     try:
+        try:
+            os.replace(source, destination)  # same drive: done in one step
+            return destination
+        except FileNotFoundError:
+            raise
+        except OSError:
+            pass  # another drive: copy instead
         shutil.copyfile(source, tmp)  # contents only: the copy stays writable
         with tmp.open("rb+") as handle:
             os.fsync(handle.fileno())
         _copy_stat(source, tmp)
-        destination = unique_destination(archive, source.name)
         os.replace(tmp, destination)
     except BaseException:
         _remove_file(tmp)
+        _remove_file(destination)  # give the reserved name back
         raise
     try:
         _remove_file(source)
@@ -482,10 +524,14 @@ def _run_locked(
 
     frames: dict[Path, FrameGeometry] = {}  # the roll's frame replaces the own
 
+    misfits: set[Path] = set()  # scans the flat field does not fit
+
     def analyse(path: Path) -> FrameAnalysis | None:
         if halted():
             return None
         raw = raw_loader.load(path, half_size=True)
+        if not flatfield.fits(cfg.flatfield, raw.rgb.shape):
+            misfits.add(path)
         flatfield.apply(raw, cfg.flatfield)
         return analyze(
             raw.rgb, settings, raw.xyz_to_cam, raw.exposure, frame=frames.get(path)
@@ -537,6 +583,8 @@ def _run_locked(
     keystone = keystone_finding([analyses[p] for p in ordered])
     if keystone is not None:
         result.hints.append(KEYSTONE_HINT.format(degrees=keystone))
+    if misfits:
+        result.hints.append(FLATFIELD_MISFIT_HINT.format(count=len(misfits)))
     for hint in result.hints:
         log.warning("%s", hint)
     # the crossover and look samples are only needed by decide
@@ -544,10 +592,14 @@ def _run_locked(
         p: replace(a, density_sample=EMPTY_SAMPLE, look_sample=EMPTY_LOOK_SAMPLE)
         for p, a in analyses.items()
     }
+    taken_names: set[str] = set()
+    names_lock = threading.Lock()  # a file in work may need another name
     outputs = dict(
         zip(
             ordered,
-            assign_outputs([p.stem for p in ordered], photos, cfg.dng, cfg.tiff),
+            assign_outputs(
+                [p.stem for p in ordered], photos, cfg.dng, cfg.tiff, taken_names
+            ),
             strict=True,
         )
     )
@@ -562,23 +614,43 @@ def _run_locked(
                 raise FileNotFoundError(
                     errno.ENOENT, "folder or drive gone", str(folder)
                 )
-        targets = outputs[path]
-        pending.mark(path, _output_files(targets))
-        try:
-            description = render(
-                path, analyses[path], decisions[path], cfg, targets, exiftool
-            )
+        for attempt in range(NAME_ATTEMPTS):
+            targets = outputs[path]
+            written: list[Path] = []
+
+            def wrote(output: Path, written: list[Path] = written) -> None:
+                written.append(output)
+                pending.add(path, output)
+
+            pending.mark(path)
             try:
-                move_to_archive(path, archive)
+                description = render(
+                    path, analyses[path], decisions[path], cfg, targets, exiftool, wrote
+                )
+                try:
+                    move_to_archive(path, archive)
+                except BaseException:
+                    _remove_files(written)
+                    raise
+            except FileExistsError:
+                # render removed what it wrote; a target that exists now was
+                # written by somebody else since the names were assigned
+                pending.clear(path)
+                if attempt + 1 == NAME_ATTEMPTS or not _outputs_left(targets):
+                    raise
+                log.info("%s: output name taken meanwhile; another one", path.name)
+                with names_lock:
+                    [outputs[path]] = assign_outputs(
+                        [path.stem], photos, cfg.dng, cfg.tiff, taken=taken_names
+                    )
+                continue
             except BaseException:
-                _remove_outputs(targets)
+                if not any(_exists(output) for output in written):
+                    pending.clear(path)  # nothing left a later run must remove
                 raise
-        except BaseException:
-            if not _outputs_left(targets):
-                pending.clear(path)  # nothing left that a later run must remove
-            raise
-        pending.clear(path)
-        return description
+            pending.clear(path)
+            return description
+        raise AssertionError("unreachable")  # pragma: no cover
 
     for path, rendered in _parallel(workers, finish, ordered):
         if isinstance(rendered, Exception):
@@ -691,14 +763,19 @@ def _output_files(outputs: OutputPaths) -> list[Path]:
     ]
 
 
-def _outputs_left(outputs: OutputPaths) -> bool:
-    """True if an output still exists, or that cannot be told (drive gone)."""
+def _exists(path: Path) -> bool:
+    """True if `path` exists, or that cannot be told (drive gone)."""
     try:
-        return any(target.exists() for target in _output_files(outputs))
+        return path.exists()
     except OSError:
         return True
 
 
-def _remove_outputs(outputs: OutputPaths) -> None:
-    for target in _output_files(outputs):
-        target.unlink(missing_ok=True)
+def _outputs_left(outputs: OutputPaths) -> bool:
+    """True if a file has one of the output names (ours or somebody's)."""
+    return any(_exists(target) for target in _output_files(outputs))
+
+
+def _remove_files(paths: Sequence[Path]) -> None:
+    for path in paths:
+        path.unlink(missing_ok=True)

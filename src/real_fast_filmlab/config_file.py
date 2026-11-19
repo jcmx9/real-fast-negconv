@@ -157,7 +157,10 @@ def default_values(folders: dict[str, Path]) -> dict[str, object]:
     """Value of every key in a new file: the defaults plus the given folders."""
     defaults = Config()
     values: dict[str, object] = {k.name: getattr(defaults, k.name) for k in ALL_KEYS}
-    values.update({name: folder.expanduser() for name, folder in folders.items()})
+    # full paths: the background service has no folder of its own to count from
+    values.update(
+        {name: folder.expanduser().absolute() for name, folder in folders.items()}
+    )
     return values
 
 
@@ -234,7 +237,7 @@ def init_file(
     current: dict[str, object] = {k.name: getattr(loaded, k.name) for k in ALL_KEYS}
     for name, folder in folders.items():
         if current[name] is None:
-            current[name] = folder.expanduser()
+            current[name] = folder.expanduser().absolute()
     if "service" not in present and service_installed is not None:
         current["service"] = service_installed()
     if expert_reset:

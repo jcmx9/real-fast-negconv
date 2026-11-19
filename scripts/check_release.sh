@@ -50,6 +50,15 @@ elif ! sed '/^#/d' "${repo}/constraints.txt" | cmp -s - "${tmp}"; then
     fail "constraints.txt does not match uv.lock (regenerate it, see its first lines)"
 fi
 
+# the pre-commit hook must lint and format like the ruff of uv.lock
+ruff_lock="$(awk '/^name = "ruff"$/ { getline; print; exit }' "${repo}/uv.lock" |
+    sed 's/^version = "\(.*\)"$/\1/')"
+ruff_hook="$(awk '/ruff-pre-commit/ { getline; print; exit }' "${repo}/.pre-commit-config.yaml" |
+    sed 's/^ *rev: v\([0-9.]*\).*$/\1/')"
+if [ -z "${ruff_lock}" ] || [ "${ruff_hook}" != "${ruff_lock}" ]; then
+    fail ".pre-commit-config.yaml uses ruff '${ruff_hook}', uv.lock has '${ruff_lock}'"
+fi
+
 if [ "${status}" -eq 0 ]; then
     printf 'release checks passed (version %s)\n' "${expected}"
 fi

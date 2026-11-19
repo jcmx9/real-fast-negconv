@@ -97,7 +97,7 @@ def write_dng(
                     metadata=None,
                 )
 
-    atomic_write(path, write, create_parents=False)
+    atomic_write(path, write, create_parents=False, exclusive=True)
 
 
 def _to_float16(linear: FloatImage) -> npt.NDArray[np.float16]:

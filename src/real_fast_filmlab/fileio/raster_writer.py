@@ -49,7 +49,7 @@ def srgb_icc_profile() -> bytes:
     LittleCMS writes the current time into the header (bytes 24-35); the
     profile carries no MD5 profile ID, so the date can be replaced as is.
     """
-    profile: bytes = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()  # type: ignore[no-untyped-call]  # Pillow stubs leave ImageCmsProfile.tobytes untyped
+    profile: bytes = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     date = struct.pack(">6H", *ICC_PROFILE_DATE)
     return profile[:24] + date + profile[36:]
 
@@ -128,7 +128,7 @@ def write_tiff(path: Path, srgb: FloatImage, *, description: str) -> None:
             software=f"real-fast-filmlab {__version__}",
         )
 
-    atomic_write(path, write, create_parents=False)
+    atomic_write(path, write, create_parents=False, exclusive=True)
 
 
 def write_jpeg(
@@ -175,4 +175,4 @@ def write_jpeg(
     def write(tmp: Path) -> None:
         tmp.write_bytes(encoded)
 
-    atomic_write(path, write, create_parents=False)
+    atomic_write(path, write, create_parents=False, exclusive=True)

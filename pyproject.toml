@@ -26,7 +26,7 @@ dependencies = [
     "tifffile>=2024.1",
     "imagecodecs>=2024.1",
     "opencv-python-headless>=4.9",
-    "Pillow>=10.0,<12.0",
+    "Pillow>=10.0",
     "watchdog>=4.0",
     "platformdirs>=4.0",
 ]
@@ -43,7 +43,6 @@ dev = [
     "mypy>=1.10",
     "bump-my-version>=1.1",
     "pre-commit>=3.7",
-    "types-Pillow",
 ]
 
 [project.urls]
@@ -55,7 +54,7 @@ Issues = "https://github.com/jcmx9/real-fast-filmlab/issues"
 path = "src/real_fast_filmlab/__init__.py"
 
 [tool.bumpversion]
-current_version = "26.11.2"
+current_version = "26.11.3"
 commit = true
 tag = true
 tag_name = "v{new_version}"
@@ -122,7 +121,10 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=src/real_fast_filmlab --cov-report=term-missing -n auto -m 'not real'"
-markers = ["real: tests against real RAW files in testdata/ (opt-in: pytest -m real)"]
+markers = [
+    "real: tests against real RAW files in testdata/ (opt-in: pytest -m real)",
+    "exiftool: needs the exiftool binary (skipped without it; a failure with RFFILMLAB_REQUIRE_EXIFTOOL=1, as in CI)",
+]
 
 [tool.mypy]
 python_version = "3.12"
@@ -143,7 +145,7 @@ branch = true
 omit = ["*/__main__.py"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 95
 show_missing = true
 exclude_lines = [
     "pragma: no cover",

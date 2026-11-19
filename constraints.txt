@@ -23,7 +23,7 @@ numpy==2.4.4
     #   tifffile
 opencv-python-headless==5.0.0.93
     # via real-fast-filmlab
-pillow==11.3.0
+pillow==13.0.0
     # via real-fast-filmlab
 platformdirs==4.9.6
     # via real-fast-filmlab

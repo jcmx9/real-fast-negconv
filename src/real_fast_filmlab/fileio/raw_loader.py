@@ -9,7 +9,7 @@ import numpy.typing as npt
 import rawpy
 
 from real_fast_filmlab.core.converter import FloatImage
-from real_fast_filmlab.exceptions import RawLoadError
+from real_fast_filmlab.exceptions import RawLoadError, UnsupportedRawError
 
 READ_CHUNK = 1024 * 1024
 RAW_EXTENSIONS = frozenset(
@@ -107,6 +107,14 @@ def load(
         raise RawLoadError(f"cannot read {path.name}: {cause}") from cause
     except (rawpy.LibRawError, OSError, ValueError) as exc:  # type: ignore[attr-defined]  # rawpy ships no stubs
         raise RawLoadError(f"cannot read {path.name}: {exc}") from exc
+    if rgb16.ndim != 3 or rgb16.shape[2] != 3:
+        # a monochrome sensor (no colour filters): one channel, no colour
+        # to take the film base from
+        channels = 1 if rgb16.ndim < 3 else rgb16.shape[2]
+        raise UnsupportedRawError(
+            f"cannot use {path.name}: {channels} colour channel(s) instead of 3 "
+            "(monochrome sensor?)"
+        )
     if not np.any(matrix):
         matrix = np.eye(3)
     rgb = rgb16.astype(np.float32)

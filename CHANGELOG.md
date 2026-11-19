@@ -5,6 +5,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [26.11.3] - 2026-11-19
+
+### Added
+- `rffilmlab service status --summary` prints the service state and the exiftool in use as fixed `key=value` lines for installers and starters
+
+### Changed
+- Pillow 13 is used (installers: 13.0.0)
+- Files that are still being copied keep the whole set waiting (at most 10 minutes), so the frames of a film are developed in one batch with their roll context
+- The service manager gives the background service up to 5 minutes to finish the files in work when it ends it (macOS, Linux)
+- Configuration: values of the wrong kind are an error (`dng = "no"`, `jpeg_quality = "90"`, `settle_seconds = inf`), folders and files must be full paths, and two spellings of one folder count as the same folder
+- RAW files from cameras without colour filters (monochrome sensor) go to `_Fehler` with that reason instead of „Unerwarteter Fehler“
+- Metadata: ExifImageWidth, ExifImageHeight and ColorSpace of the RAW are no longer copied into the cropped pictures; TIFF and JPEG say sRGB; a camera name does not repeat the maker (Canon EOS R5, not Canon Canon EOS R5)
+- Flat field: an overexposed reference (it gave a map that corrected nothing), one without light, an unreadable or a missing one is reported by the self-check (dialog, console, notification of the background service), and the pictures are developed without it; a reference of other proportions than the scans is told as a hint of the run
+- Installers: when the settings could not be set up or the background service could not be started, the summary says „Nicht fertig: …“ with what is missing instead of „Fertig!“, and the installer ends with an error
+- Windows: `service status` tells a running background service apart from one that only starts at login
+
+### Fixed
+- Flat field: a reference that shows the light window of a holder in a black frame no longer darkens the picture next to the frame (the film base came out wrong by 0.3 to 0.4 density); the map is built from the lit area only and carried on beyond it
+- A frame that fills the scan, with its clear film edge all around at the very border, no longer has that edge taken for bare light (the film base came out wrong by about 0.3 density when no shadow in the picture was as clear as the base)
+- Crop: a film edge that is not pixel-sharp (blur, a film lying askew) no longer keeps a wide rebate in the picture and snaps to the next wider format (3:2 read as 6×4.5, 6×4.5 as 6×7)
+- Names in `Archiv/` and `Fotos/` are taken exclusively: two runs that use the same archive or photos folder at once, or a file put there during a run, can no longer replace an archived original or a finished picture; the picture then gets the next free name
+- A marker left by an interrupted run no longer removes the pictures of another file of the same name (it applies only to the RAW it was written for and names only outputs that were written)
+- Outputs are flushed to the disk before they get their name: after a power failure no empty file stands under the final name
+- Installers: the closing summary shows the state of the background service and whether exiftool was found (it showed „unbekannt“ and „vorhanden“ whatever the state)
+
 ## [26.11.2] - 2026-11-19
 
 ### Added
@@ -134,6 +159,7 @@ First public release.
 - TOML configuration with `rffilmlab config init`, expert thresholds and the `RFFILMLAB_HOME` variable for isolated development runs
 - Camera metadata copied with exiftool when available
 
-[Unreleased]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.2...HEAD
+[Unreleased]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.3...HEAD
+[26.11.3]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.2...v26.11.3
 [26.11.2]: https://github.com/jcmx9/real-fast-filmlab/compare/v26.11.1...v26.11.2
 [26.11.1]: https://github.com/jcmx9/real-fast-filmlab/releases/tag/v26.11.1

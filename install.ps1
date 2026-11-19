@@ -42,7 +42,7 @@ $script:CallerProgress = $ProgressPreference
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is very slow with progress in 5.1
 
-$script:Version = '26.11.2'
+$script:Version = '26.11.3'
 $script:AppName = 'real-fast-filmlab'
 $script:RepoUrl = 'https://github.com/jcmx9/real-fast-filmlab'
 $script:RawUrl = 'https://raw.githubusercontent.com/jcmx9/real-fast-filmlab'
@@ -73,6 +73,8 @@ if ($OhneDienst) { $script:OffSwitches += 'service' }
 $script:LauncherName = 'Negative entwickeln'
 $script:LauncherPlace = ''
 $script:ServiceRemoved = $false
+$script:ConfigFailed = $false
+$script:ServiceFailed = $false
 $script:ManualRunActive = $false
 
 function Get-UserFolder {
@@ -466,6 +468,7 @@ function Initialize-Folder {
     }
     if ($result.ExitCode -ne 0) {
         Write-Hint "Die Einstellungen konnten nicht eingerichtet werden (siehe Meldung oben). Bitte die Datei config.toml pr$($script:ue)fen."
+        $script:ConfigFailed = $true
         return $false
     }
     foreach ($line in $result.Output) {
@@ -503,6 +506,7 @@ function Register-Service {
         return $true
     }
     Write-Hint "Der Hintergrunddienst konnte nicht gestartet werden. Bilder lassen sich trotzdem mit $($script:lq)rffilmlab$($script:rq) umwandeln."
+    $script:ServiceFailed = $true
     return $false
 }
 
@@ -762,23 +766,41 @@ function Show-Summary {
     $app = Find-App
     Write-Info ''
     $versionLine = 'rffilmlab (Version unbekannt)'
-    $statusText = ''
+    $status = @{}
     if ($null -ne $app) {
         $version = Invoke-Tool -FilePath $app -ArgumentList @('--version') -Capture
         if ($version.Output.Count -gt 0) { $versionLine = [string]$version.Output[0] }
-        $statusText = (Invoke-Tool -FilePath $app -ArgumentList @('service', 'status') -Capture).Output -join "`n"
+        # fixed words, one "key=value" per line: independent of the program's language
+        $statusLines = (Invoke-Tool -FilePath $app -ArgumentList @('service', 'status', '--summary') -Capture).Output
+        foreach ($line in $statusLines) {
+            $parts = "$line".Split([char[]]'=', 2)
+            if ($parts.Count -eq 2) { $status[$parts[0]] = $parts[1] }
+        }
     }
     $service = 'unbekannt'
-    if ($statusText -like '*installed and running*') { $service = "l$($script:ae)uft" }
-    elseif ($statusText -like '*installed but not running*') { $service = "eingerichtet, l$($script:ae)uft aber gerade nicht" }
-    elseif ($statusText -like '*starts at login*') { $service = 'eingerichtet (startet bei der Anmeldung)' }
-    elseif ($statusText -like '*not installed*') { $service = 'nicht eingerichtet' }
+    if ($status['service'] -eq 'running') { $service = "l$($script:ae)uft" }
+    elseif ($status['service'] -eq 'stopped') { $service = "eingerichtet, l$($script:ae)uft aber gerade nicht" }
+    elseif ($status['service'] -eq 'installed') { $service = 'eingerichtet (startet bei der Anmeldung)' }
+    elseif ($status['service'] -eq 'absent') { $service = 'nicht eingerichtet' }
     Write-Info "Installiert: $versionLine"
     Write-Info "Hintergrunddienst: $service"
-    if ($statusText -like '*exiftool: not found*') { Write-Info 'exiftool: nicht gefunden (Fotos ohne Kameradaten)' }
-    elseif ($statusText -like '*exiftool: *') { Write-Info 'exiftool: vorhanden' }
+    # no answer: say nothing rather than something wrong
+    if ($status.ContainsKey('exiftool')) {
+        if ($status['exiftool']) { Write-Info 'exiftool: vorhanden' }
+        else { Write-Info 'exiftool: nicht gefunden (Fotos ohne Kameradaten)' }
+    }
     Write-Info ''
-    Write-Info 'Fertig!'
+    if ($script:ConfigFailed) {
+        Write-Info 'Nicht fertig: Das Programm ist installiert, aber Ordner und Einstellungen sind nicht eingerichtet.'
+        Write-Info "  Bitte die Datei config.toml pr$($script:ue)fen (Meldung oben) und diesen Befehl danach noch einmal ausf$($script:ue)hren."
+    }
+    elseif ($script:ServiceFailed) {
+        Write-Info "Nicht fertig: Das Programm ist installiert, aber der Hintergrunddienst l$($script:ae)uft nicht."
+        Write-Info "  Bitte diesen Befehl noch einmal ausf$($script:ue)hren. Bis dahin wird nur von Hand umgewandelt."
+    }
+    else {
+        Write-Info 'Fertig!'
+    }
     if ($script:Folders['negative']) {
         Write-Info "  Negative (hier Scans hineinlegen): $($script:Folders['negative'])"
         Write-Info "  Fotos (hier erscheinen die Bilder): $($script:Folders['photos'])"
@@ -787,7 +809,10 @@ function Show-Summary {
     }
     $launcher = "Programm $($script:lq)$($script:LauncherName)$($script:rq)"
     if ($script:LauncherPlace) { $launcher += " (im $($script:LauncherPlace))" }
-    if ($script:ServiceRemoved) {
+    if ($script:ConfigFailed) {
+        Write-Verbose 'nothing is set up: no folder and no launcher to point at'
+    }
+    elseif ($script:ServiceRemoved -or $script:ServiceFailed) {
         Write-Info "Ohne Hintergrunddienst: Die Umwandlung startet nur $($script:ue)ber das $launcher."
     }
     else {
@@ -836,6 +861,8 @@ function Install-Everything {
     }
     Install-ExifTool  # optional and online: last, so an abort here loses nothing else
     Show-Summary
+    # ends with an error like every other failure (iex: no exit, that would close the window)
+    if ($script:ConfigFailed -or $script:ServiceFailed) { throw 'rffilmlab: Installation nicht abgeschlossen.' }
 }
 
 # --- uninstall --------------------------------------------------------------

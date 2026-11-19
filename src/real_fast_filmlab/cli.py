@@ -397,26 +397,42 @@ def service_uninstall() -> None:
 @service_app.command(
     "status", help="Zeigen, ob der Hintergrunddienst eingerichtet ist und läuft."
 )
-def service_status(ctx: typer.Context) -> None:
+def service_status(
+    ctx: typer.Context,
+    summary: Annotated[
+        bool,
+        typer.Option(
+            "--summary",
+            help=(
+                "Für Installer und Starter: gibt die Zeilen "
+                "'service=<absent|installed|running|stopped>' und "
+                "'exiftool=<Pfad oder leer>' aus."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Show whether the background service is installed and running."""
+    exiftool = _exiftool(ctx.obj)
+    if summary:
+        _service(lambda: f"service={daemon.state()}\nexiftool={exiftool or ''}")
+        return
+    found = exiftool or "nicht gefunden (die Fotos bekommen keine Kameradaten)"
     _service(
         lambda: (
             f"{daemon.status()}\nProtokoll: {default_log_dir() / LOG_FILE_NAME}"
             f"\nProtokoll der Einzelläufe: {default_log_dir() / RUN_LOG_FILE_NAME}"
-            f"\n{_exiftool_line(ctx.obj)}"
+            f"\nexiftool: {found}"
         )
     )
 
 
-def _exiftool_line(state: State) -> str:
+def _exiftool(state: State) -> Path | None:
+    """The exiftool in use, or None."""
     try:
         configured = load_config(state.config_path).exiftool_path
     except RfFilmlabError:
         configured = None
-    tool = ExifTool.locate(configured)
-    if tool.executable is None:
-        return "exiftool: nicht gefunden (die Fotos bekommen keine Kameradaten)"
-    return f"exiftool: {tool.executable}"
+    return ExifTool.locate(configured).executable
 
 
 @config_app.command(

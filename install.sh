@@ -37,7 +37,7 @@
 #             130 interrupted (Ctrl-C, closed terminal).
 set -eu
 
-RFFILMLAB_VERSION="26.11.2"
+RFFILMLAB_VERSION="26.11.3"
 APP_NAME="real-fast-filmlab"
 REPO_URL="https://github.com/jcmx9/real-fast-filmlab"
 RAW_URL="https://raw.githubusercontent.com/jcmx9/real-fast-filmlab"
@@ -55,6 +55,8 @@ SERVICE_SWITCH=""
 SERVICE_REMOVED=0
 SERVICE_STARTED=0
 SERVICE_STOPPED=0
+CONFIG_FAILED=0
+SERVICE_FAILED=0
 SERVICE_LABEL="io.github.jcmx9.rffilmlab"
 SERVICE_UNIT="rffilmlab.service"
 LAUNCHER_NAME="Negative entwickeln"
@@ -437,6 +439,7 @@ setup_folders() {
     done
     if ! output="$(rffilmlab "$@")"; then
         hint "Die Einstellungen konnten nicht eingerichtet werden (siehe Meldung oben). Bitte die Datei config.toml prüfen."
+        CONFIG_FAILED=1
         return 1
     fi
     NEGATIVE_DIR="$(printf '%s\n' "${output}" | sed -n 's/^negative=//p')"
@@ -470,6 +473,7 @@ setup_service() {
         say "✓ Hintergrunddienst läuft."
     else
         hint "Der Hintergrunddienst konnte nicht gestartet werden. Bilder lassen sich trotzdem mit „rffilmlab“ umwandeln."
+        SERVICE_FAILED=1
     fi
 }
 
@@ -787,31 +791,43 @@ final_check() {
     say ""
     version_line="$(rffilmlab --version 2>/dev/null || true)"
     say "Installiert: ${version_line:-rffilmlab (Version unbekannt)}"
-    status_text="$(rffilmlab service status </dev/null 2>/dev/null || true)"
-    case "${status_text}" in
-        *"installed and running"*) service_de="läuft" ;;
-        *"installed but not running"*) service_de="eingerichtet, läuft aber gerade nicht" ;;
-        *"starts at login"*) service_de="eingerichtet (startet bei der Anmeldung)" ;;
-        *"not installed"*) service_de="nicht eingerichtet" ;;
+    # fixed words, one "key=value" per line: independent of the program's language
+    status_lines="$(rffilmlab service status --summary </dev/null 2>/dev/null || true)"
+    case "$(printf '%s\n' "${status_lines}" | sed -n 's/^service=//p')" in
+        running) service_de="läuft" ;;
+        stopped) service_de="eingerichtet, läuft aber gerade nicht" ;;
+        installed) service_de="eingerichtet (startet bei der Anmeldung)" ;;
+        absent) service_de="nicht eingerichtet" ;;
         *) service_de="unbekannt" ;;
     esac
     say "Hintergrunddienst: ${service_de}"
-    case "${status_text}" in
-        *"exiftool: not found"*) say "exiftool: nicht gefunden (Fotos ohne Kameradaten)" ;;
-        *"exiftool: "*) say "exiftool: vorhanden" ;;
+    case "$(printf '%s\n' "${status_lines}" | grep '^exiftool=' || true)" in
+        "") ;;  # no answer: say nothing rather than something wrong
+        "exiftool=") say "exiftool: nicht gefunden (Fotos ohne Kameradaten)" ;;
+        *) say "exiftool: vorhanden" ;;
     esac
 }
 
 summary() {
     say ""
-    say "Fertig!"
+    if [ "${CONFIG_FAILED}" = "1" ]; then
+        say "Nicht fertig: Das Programm ist installiert, aber Ordner und Einstellungen sind nicht eingerichtet."
+        say "  Bitte die Datei config.toml prüfen (Meldung oben) und diesen Befehl danach noch einmal ausführen."
+    elif [ "${SERVICE_FAILED}" = "1" ]; then
+        say "Nicht fertig: Das Programm ist installiert, aber der Hintergrunddienst läuft nicht."
+        say "  Bitte diesen Befehl noch einmal ausführen. Bis dahin wird nur von Hand umgewandelt."
+    else
+        say "Fertig!"
+    fi
     if [ -n "${NEGATIVE_DIR}" ]; then
         say "  Negative (hier Scans hineinlegen): ${NEGATIVE_DIR}"
         say "  Fotos (hier erscheinen die Bilder): ${PHOTOS_DIR}"
         say "  Archiv (fertige Scans):            ${ARCHIVE_DIR}"
         say "  Einstellungen:                     ${CONFIG_FILE}"
     fi
-    if [ "${SERVICE_REMOVED}" = "1" ]; then
+    if [ "${CONFIG_FAILED}" = "1" ]; then
+        :  # nothing is set up: no folder and no launcher to point at
+    elif [ "${SERVICE_REMOVED}" = "1" ] || [ "${SERVICE_FAILED}" = "1" ]; then
         say "Ohne Hintergrunddienst: Die Umwandlung startet nur über das Programm „${LAUNCHER_NAME}“${LAUNCHER_PLACE:+ (in ${LAUNCHER_PLACE})}."
     else
         say "Dateien im Ordner „Negative“ werden automatisch umgewandelt."
@@ -847,6 +863,9 @@ do_install() {
     ensure_exiftool  # optional and online: last, so an abort here loses nothing else
     final_check
     summary
+    if [ "${CONFIG_FAILED}" = "1" ] || [ "${SERVICE_FAILED}" = "1" ]; then
+        exit 1
+    fi
 }
 
 # --- uninstall --------------------------------------------------------------

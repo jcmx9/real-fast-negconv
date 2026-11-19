@@ -119,8 +119,18 @@ DNG_TAGS = (
 )
 
 
+SRGB_SUFFIXES = frozenset({".tif", ".tiff", ".jpg", ".jpeg"})
+
+
 def copy_command(executable: Path, source: Path, target: Path) -> list[str]:
-    """exiftool arguments copying all metadata except tags we set ourselves."""
+    """exiftool arguments copying all metadata except tags we set ourselves.
+
+    TIFF and JPEG are sRGB pictures and say so (exiftool would otherwise
+    fill the mandatory ColorSpace with "Uncalibrated"); the DNG is not.
+    """
+    colour_space = (
+        ["-EXIF:ColorSpace#=1"] if target.suffix.lower() in SRGB_SUFFIXES else []
+    )
     return [
         str(executable),
         "-q",
@@ -135,13 +145,32 @@ def copy_command(executable: Path, source: Path, target: Path) -> list[str]:
         "--Software",
         "--ImageWidth",
         "--ImageHeight",
+        # they describe the RAW: the outputs are cropped and carry their own
+        # colour profile
+        "--ExifImageWidth",
+        "--ExifImageHeight",
+        "--ColorSpace",
         "--XMP-crs:all",
         *(f"--{tag}" for tag in DNG_TAGS),
         "-ThumbnailImage=",
         "-PreviewImage=",
         "-Orientation#=1",
+        *colour_space,
         str(target),
     ]
+
+
+def _present(value: str) -> str | None:
+    return None if value in ("", "-") else value
+
+
+def join_camera_name(make: str | None, model: str | None) -> str | None:
+    """'<Make> <Model>', without the maker where the model names it already."""
+    if make is None or model is None:
+        return make or model
+    if model.casefold().startswith(make.split()[0].casefold()):
+        return model
+    return f"{make} {model}"
 
 
 def private_exiftool_path(platform: str = sys.platform) -> Path:
@@ -173,12 +202,17 @@ class ExifTool:
         return self.executable is not None
 
     def camera_name(self, source: Path) -> str | None:
-        """'<Make> <Model>' of a file, or None."""
+        """'<Make> <Model>' of a file, or None.
+
+        Many cameras repeat the maker in the model ("Canon" / "Canon EOS
+        R5"): the model alone is the name then.
+        """
         if self.executable is None:
             return None
         try:
             done = subprocess.run(
-                [str(self.executable), "-s3", "-Make", "-Model", str(source)],
+                # one line, tab-separated, "-" for a missing tag
+                [str(self.executable), "-T", "-Make", "-Model", str(source)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -189,10 +223,9 @@ class ExifTool:
         except Exception as exc:  # best effort: metadata must never fail a file
             log.warning("exiftool could not read %s: %s", source.name, exc)
             return None
-        name = " ".join(
-            line.strip() for line in done.stdout.splitlines() if line.strip()
-        )
-        return name or None
+        fields = [field.strip() for field in done.stdout.strip().split("\t")]
+        make, model = ([*fields, "", ""])[:2]
+        return join_camera_name(_present(make), _present(model))
 
     def copy_metadata(self, source: Path, targets: Sequence[Path]) -> bool:
         """Copy metadata from `source` into every target; False if any failed."""

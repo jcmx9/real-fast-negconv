@@ -17,6 +17,10 @@ class RawLoadError(RfFilmlabError):
     """A RAW file could not be decoded."""
 
 
+class UnsupportedRawError(RawLoadError):
+    """A RAW that decodes, but not into the three colour channels needed."""
+
+
 class EncodeError(RfFilmlabError):
     """An output image could not be encoded from this file's data."""
 

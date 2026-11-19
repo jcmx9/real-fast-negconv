@@ -38,8 +38,22 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # exactly the versions of uv.lock; a lock that does not fit pyproject.toml fails
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
+
+      # the tests that need exiftool must run here, not be skipped
+      - name: Install exiftool (Linux)
+        if: runner.os == 'Linux' && hashFiles('tests/**') != ''
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
+
+      - name: Install exiftool (macOS)
+        if: runner.os == 'macOS' && hashFiles('tests/**') != ''
+        run: brew install exiftool
+
+      - name: Install exiftool (Windows)
+        if: runner.os == 'Windows' && hashFiles('tests/**') != ''
+        run: choco install exiftool --yes --no-progress
 
       # The published tree has no tests/ (they are maintained privately);
       # the checks then cover src/ only. The private sandbox has both.
@@ -55,6 +69,8 @@ jobs:
 
       - name: Tests with coverage
         if: hashFiles('tests/**') != ''
+        env:
+          RFFILMLAB_REQUIRE_EXIFTOOL: '1'
         run: uv run pytest --cov-report=xml
 
   installer:

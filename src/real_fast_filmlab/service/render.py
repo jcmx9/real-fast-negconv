@@ -1,7 +1,7 @@
 """Pass 2 for one file: convert the negative and write DNG, TIFF and JPEG."""
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,10 +73,20 @@ class Developed:
 
 
 def assign_outputs(
-    stems: Sequence[str], photos_dir: Path, with_dng: bool, with_tiff: bool = True
+    stems: Sequence[str],
+    photos_dir: Path,
+    with_dng: bool,
+    with_tiff: bool = True,
+    taken: set[str] | None = None,
 ) -> list[OutputPaths]:
-    """Collision-free output names; never overwrites existing files."""
-    taken: set[str] = set()
+    """Output names that are free now and differ from each other.
+
+    `taken` (lower-case names already given out; the new ones are added)
+    lets a later call keep away from the names of an earlier one. A name
+    is not reserved by this: the files are written exclusively, and a name
+    that was taken in the meantime is given up (see batch).
+    """
+    taken = set() if taken is None else taken
     result: list[OutputPaths] = []
     for stem in stems:
         n = 1
@@ -202,8 +212,13 @@ def render(
     cfg: Config,
     outputs: OutputPaths,
     exiftool: ExifTool,
+    on_written: Callable[[Path], None] | None = None,
 ) -> str:
     """Load, develop and write all outputs of one file; returns the description.
+
+    An output is never written over an existing file (FileExistsError; the
+    outputs written before are removed). `on_written` is told each output
+    as soon as it has its name.
 
     Memory: the RAW buffer is consumed by develop, the full-size linear image
     is dropped right after the DNG, before TIFF/JPEG are produced.
@@ -235,6 +250,12 @@ def render(
     corrected = apply_look_params(srgb, decision.look)
     del srgb
     written: list[Path] = []
+
+    def done(path: Path) -> None:
+        written.append(path)
+        if on_written is not None:
+            on_written(path)
+
     try:
         if outputs.dng is not None:
             if decision.is_bw:
@@ -253,11 +274,11 @@ def render(
                 description=description,
                 integer=cfg.dng_finder_preview,
             )
-            written.append(outputs.dng)
+            done(outputs.dng)
         del linear
         if outputs.tiff is not None:
             write_tiff(outputs.tiff, corrected, description=description)
-            written.append(outputs.tiff)
+            done(outputs.tiff)
         if cfg.jpeg_sharpen:
             sharpen(corrected)
         write_jpeg(
@@ -266,7 +287,7 @@ def render(
             description=description,
             quality=cfg.jpeg_quality,
         )
-        written.append(outputs.jpeg)
+        done(outputs.jpeg)
         if exiftool.available and not exiftool.copy_metadata(source, written):
             log.warning("%s: EXIF metadata could not be copied", source.name)
     except BaseException:

@@ -45,7 +45,9 @@ def default_log_dir() -> Path:
 class Config(BaseModel):
     """Runtime configuration (config file plus command-line overrides)."""
 
-    model_config = ConfigDict(extra="forbid")
+    # strict: `dng = "no"` or `jpeg_quality = "90"` are mistakes, not values;
+    # no infinite or undefined numbers (`settle_seconds = inf`)
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
     negative_dir: Path | None = None
     archive_dir: Path | None = None
@@ -141,7 +143,10 @@ class Config(BaseModel):
         negative, archive, photos = (
             Path(getattr(self, n)).resolve() for n in DIR_FIELDS
         )
-        if len({negative, archive, photos}) < 3:
+        folders = (negative, archive, photos)
+        if any(
+            _same_folder(a, b) for i, a in enumerate(folders) for b in folders[i + 1 :]
+        ):
             raise ConfigError(
                 "negative_dir, archive_dir und photos_dir müssen drei "
                 "verschiedene Ordner sein"
@@ -181,6 +186,32 @@ class Config(BaseModel):
         )
 
 
+def _same_folder(a: Path, b: Path) -> bool:
+    """True if both paths name one folder, however they are written.
+
+    Two spellings of a name on a file system that ignores case, or a link
+    and its target, are the same folder though the texts differ.
+    """
+    if a == b:
+        return True
+    try:
+        return a.samefile(b)
+    except OSError:  # one of them does not exist (yet): the texts decide
+        return False
+
+
+PATH_FIELDS = (*DIR_FIELDS, "exiftool_path", "flatfield")
+
+
+def _relative_paths(config: "Config") -> list[str]:
+    """Path keys whose value is not a full path."""
+    return [
+        name
+        for name in PATH_FIELDS
+        if (value := getattr(config, name)) is not None and not value.is_absolute()
+    ]
+
+
 def load_config(path: Path) -> Config:
     """Load a TOML config; a missing file yields the defaults."""
     if not path.exists():
@@ -198,9 +229,17 @@ def load_config(path: Path) -> Config:
         if data.pop(key, None) is not None:
             log.debug("config key %r has no effect; ignored", key)
     try:
-        return Config.model_validate(data)
+        config = Config.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(format_errors(exc)) from exc
+    # the background service has no folder of its own to count from
+    relative = _relative_paths(config)
+    if relative:
+        raise ConfigError(
+            "Ungültige Einstellung: "
+            + "; ".join(f"{name}: {RELATIVE_PATH}" for name in relative)
+        )
+    return config
 
 
 def syntax_error(exc: tomllib.TOMLDecodeError) -> str:
@@ -239,6 +278,8 @@ def _plain(err: ErrorDetails) -> str:
     return err["msg"]
 
 
+RELATIVE_PATH = "muss ein vollständiger Pfad sein (ab / oder ~, unter Windows ab C:\\)"
+
 _BOUNDS = {
     "greater_than": ("gt", "muss größer als {} sein"),
     "greater_than_equal": ("ge", "muss mindestens {} sein"),
@@ -250,5 +291,7 @@ _TYPES = (
     ("int_", "muss eine ganze Zahl sein"),
     ("float_", "muss eine Zahl sein"),
     ("path_", "muss ein Text in Anführungszeichen sein"),
+    ("is_instance_of", "muss ein Text in Anführungszeichen sein"),
+    ("finite_number", "muss eine endliche Zahl sein"),
     ("string_", "muss ein Text in Anführungszeichen sein"),
 )

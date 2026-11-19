@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import typer
 
@@ -20,9 +20,18 @@ from real_fast_filmlab.fileio.lock import file_lock
 
 log = logging.getLogger(__name__)
 
-NOT_INSTALLED = "Dienst nicht eingerichtet."
-RUNNING = "Dienst eingerichtet und läuft."
-NOT_RUNNING = "Dienst eingerichtet, läuft aber nicht."
+# time the service manager gives the watcher to finish the files in work
+# before it kills it (logout, update)
+STOP_TIMEOUT_SECONDS = 300
+
+type ServiceState = Literal["absent", "installed", "running", "stopped"]
+
+STATE_TEXT: dict[ServiceState, str] = {
+    "absent": "Dienst nicht eingerichtet.",
+    "installed": "Dienst eingerichtet (startet bei der Anmeldung).",
+    "running": "Dienst eingerichtet und läuft.",
+    "stopped": "Dienst eingerichtet, läuft aber nicht.",
+}
 
 LABEL = "io.github.jcmx9.rffilmlab"
 UNIT_NAME = "rffilmlab.service"
@@ -97,6 +106,9 @@ def launchd_plist(command: list[str], log_dir: Path, path_env: str) -> bytes:
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ProcessType": "Adaptive",
+            # launchd kills 20 s after asking to end unless told otherwise;
+            # the files in work are finished first
+            "ExitTimeOut": STOP_TIMEOUT_SECONDS,
             "EnvironmentVariables": {"PATH": path_env},
             "StandardOutPath": str(log_dir / "service.out.log"),
             "StandardErrorPath": str(log_dir / "service.err.log"),
@@ -115,7 +127,8 @@ def systemd_unit(command: list[str], path_env: str) -> str:
         f"ExecStart={exec_start}\n"
         f'Environment="PATH={path_escaped}"\n'
         "Restart=on-failure\n"
-        "RestartSec=10\n\n"
+        "RestartSec=10\n"
+        f"TimeoutStopSec={STOP_TIMEOUT_SECONDS}\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
@@ -291,50 +304,66 @@ def reconcile(
     return None
 
 
-def status(
+def state(
     *,
     platform: str = sys.platform,
     home: Path | None = None,
     runner: Runner | None = None,
-) -> str:
-    """Human-readable service state."""
+) -> ServiceState:
+    """The service state as a fixed word (for installers and launchers).
+
+    "absent": not set up; "running" / "stopped": set up and (not) running;
+    "installed": set up, running unknown (Windows without a watcher that
+    holds its lock, or an isolated RFFILMLAB_HOME run, which asks no service
+    manager).
+    """
     if runner is None and paths.dev_home() is not None:
-        installed = {
+        present = {
             "darwin": _plist_path,
             "win32": _startup_path,
         }.get(platform, _unit_path)(home).exists()
-        return (
-            f"Dienstdateien vorhanden ({paths.HOME_ENV}: Dienstbefehle laufen nicht)."
-            if installed
-            else NOT_INSTALLED
-        )
+        return "installed" if present else "absent"
     runner = runner or _default_runner()
     if platform == "darwin":
         if not _plist_path(home).exists():
-            return NOT_INSTALLED
+            return "absent"
         done = runner(
             ["launchctl", "print", f"gui/{_uid()}/{LABEL}"],
             check=False,
             capture_output=True,
             text=True,
         )
-        return RUNNING if done.returncode == 0 else NOT_RUNNING
+        return "running" if done.returncode == 0 else "stopped"
     if platform.startswith("linux"):
         if not _unit_path(home).exists():
-            return NOT_INSTALLED
+            return "absent"
         done = runner(
             ["systemctl", "--user", "is-active", UNIT_NAME],
             check=False,
             capture_output=True,
             text=True,
         )
-        running = str(done.stdout).strip() == "active"
-        return RUNNING if running else NOT_RUNNING
+        return "running" if str(done.stdout).strip() == "active" else "stopped"
     if platform == "win32":
-        if _startup_path(home).exists():
-            return "Dienst eingerichtet (startet bei der Anmeldung)."
-        return NOT_INSTALLED
+        if not _startup_path(home).exists():
+            return "absent"
+        return "running" if watcher_running() else "installed"
     raise ServiceError(f"Nicht unterstütztes Betriebssystem: {platform}")
+
+
+def status(
+    *,
+    platform: str = sys.platform,
+    home: Path | None = None,
+    runner: Runner | None = None,
+) -> str:
+    """Human-readable service state (German)."""
+    current = state(platform=platform, home=home, runner=runner)
+    if current == "installed" and runner is None and paths.dev_home() is not None:
+        return (
+            f"Dienstdateien vorhanden ({paths.HOME_ENV}: Dienstbefehle laufen nicht)."
+        )
+    return STATE_TEXT[current]
 
 
 def _uid() -> int:

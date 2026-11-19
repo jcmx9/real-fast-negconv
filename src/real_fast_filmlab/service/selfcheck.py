@@ -1,7 +1,8 @@
 """Silent self-check before every run: only problems are reported.
 
 Checks: the folders are reachable and writable, enough free space on the
-drives of the Negative and photos folders, exiftool is found, new files in
+drives of the Negative and photos folders, exiftool is found, the flat-field
+reference can be used, new files in
 `Negative/_Fehler` since the last check, and the background service matches
 the `service` switch. The messages are plain German (dialog, notification).
 """
@@ -18,6 +19,7 @@ from pathlib import Path
 from real_fast_filmlab import paths
 from real_fast_filmlab.config import Config
 from real_fast_filmlab.exceptions import FolderError
+from real_fast_filmlab.fileio import flatfield
 from real_fast_filmlab.fileio.atomic import atomic_write
 from real_fast_filmlab.fileio.exiftool import ExifTool
 from real_fast_filmlab.service import daemon
@@ -99,6 +101,31 @@ def check_exiftool(cfg: Config) -> list[Problem]:
         Problem(
             "exiftool",
             "exiftool wurde nicht gefunden – die Fotos bekommen keine Kameradaten.",  # noqa: RUF001  # German typographic dash is intended
+        )
+    ]
+
+
+FLATFIELD_PROBLEMS: dict[flatfield.Reason, str] = {
+    "missing": "ist nicht lesbar (Datei verschoben, Laufwerk nicht angeschlossen?)",
+    "unreadable": "ist keine lesbare RAW-Datei",
+    "overexposed": (
+        "ist übersteuert – bitte die Leeraufnahme kürzer belichten, "  # noqa: RUF001  # German typographic dash is intended
+        "bis nichts mehr überstrahlt"
+    ),
+    "dark": "zeigt kein Licht",
+}
+
+
+def check_flatfield(cfg: Config) -> list[Problem]:
+    """The configured flat-field reference can be used."""
+    reason = flatfield.problem(cfg.flatfield)
+    if reason is None or cfg.flatfield is None:
+        return []
+    return [
+        Problem(
+            f"flatfield:{reason}",
+            f"Die Flat-Field-Referenz „{cfg.flatfield.name}“ "
+            f"{FLATFIELD_PROBLEMS[reason]}. Die Bilder werden ohne sie entwickelt.",
         )
     ]
 
@@ -211,6 +238,7 @@ def self_check(
     problems = check_folders(cfg) if folders else []
     problems += check_space(cfg)
     problems += check_exiftool(cfg)
+    problems += check_flatfield(cfg)
     problems += check_error_files(cfg)
     if service:
         problems += check_service(cfg)

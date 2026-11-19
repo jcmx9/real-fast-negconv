@@ -61,6 +61,7 @@ STRIP_AREA_SLACK = 0.03  # a frame freed of strips may be this much smaller stil
 # Bare-light strips along the image border
 BORDER_MARGIN = 0.02  # border ignored for the first base estimate, x long edge
 BARE_GAP = 0.2  # density below the first base estimate: bare light, not film
+RIM_COVERAGE = 0.8  # clear along this share of all four sides: a film edge, not light
 # Colour or BW: small coloured details count, so a very high percentile
 BW_PERCENTILE = 99.9
 
@@ -438,16 +439,22 @@ def _locate(
     strict = strict[y : y + box_h, x : x + box_w]
     loose = loose[y : y + box_h, x : x + box_w]
     min_run = max(2, max(box_w, box_h) // 100)
-    if box_w >= box_h:
-        (c0, c1), found_c = _long_axis(strict.mean(axis=0), loose.mean(axis=0), min_run)
-        (r0, r1), found_r = _trim_edges(loose.mean(axis=1))
-    else:
-        (r0, r1), found_r = _long_axis(strict.mean(axis=1), loose.mean(axis=1), min_run)
-        (c0, c1), found_c = _trim_edges(loose.mean(axis=0))
+    spans = _frame_spans(strict, loose, min_run, 0)
+    aspect, (width, height) = _snap_aspect(*_span_size(spans), settings.aspect_tol)
+    # Where the film edge is not pixel-sharp (lens blur, a turned or deskewed
+    # film) its outermost lines are a mix of film and holder: neither
+    # base-like nor quiet, as far as the window of the local std reaches,
+    # and the rebate behind them is not cut. The frame then keeps the rebate
+    # and may fit another, wider format. Cutting through such an edge
+    # decides only if it leads to another format: with the same
+    # format the frame edges place the crop as before.
+    through = _frame_spans(strict, loose, min_run, window)
+    if through != spans:
+        other, size = _snap_aspect(*_span_size(through), settings.aspect_tol)
+        if other not in (aspect, "free"):
+            spans, aspect, (width, height) = through, other, size
+    (c0, c1), (r0, r1), found_c, found_r = spans
     segment = (y + r0, x + c0, y + r1, x + c1)
-    aspect, (width, height) = _snap_aspect(
-        float(c1 - c0), float(r1 - r0), settings.aspect_tol
-    )
     axes: list[str] = []
     if aspect != "free":
         dens = lum[y : y + box_h, x : x + box_w] - d_ref
@@ -492,6 +499,35 @@ def _locate(
         ),
     )
     return geometry, edges
+
+
+type _Spans = tuple[Span, Span, bool, bool]  # columns, rows, found per axis
+
+
+def _frame_spans(strict: BoolMask, loose: BoolMask, min_run: int, rim: int) -> _Spans:
+    """Column and row span of the frame in the film box, and what was found.
+
+    Along the film (its longer side) the ends are trimmed and the widest
+    segment between gaps is kept; across it the rebate is trimmed. `rim`:
+    see _trim_edges.
+    """
+    box_h, box_w = loose.shape
+    if box_w >= box_h:
+        columns, found_c = _long_axis(
+            strict.mean(axis=0), loose.mean(axis=0), min_run, rim
+        )
+        rows, found_r = _trim_edges(loose.mean(axis=1), rim)
+    else:
+        rows, found_r = _long_axis(
+            strict.mean(axis=1), loose.mean(axis=1), min_run, rim
+        )
+        columns, found_c = _trim_edges(loose.mean(axis=0), rim)
+    return columns, rows, found_c, found_r
+
+
+def _span_size(spans: _Spans) -> tuple[float, float]:
+    (c0, c1), (r0, r1), _, _ = spans
+    return float(c1 - c0), float(r1 - r0)
 
 
 def _edge_profiles(
@@ -574,12 +610,34 @@ def _bare_light(lum: FloatImage) -> BoolMask:
     light (film edge, holder gap) would be the lowest density of the image.
     Bare light is whatever lies BARE_GAP below that estimate; film, including
     its clear base, never does.
+
+    One case looks the same and is film: a frame that fills the scan, with
+    its clear film edge all around inside the margin and no shadow in the
+    picture as clear as the base. Light beside a film or through a holder
+    gap lies along one side or two opposite ones, perforation shows in
+    patches; only the edge of a frame runs along all four sides. If the
+    clear pixels of the margin cover at least RIM_COVERAGE of each side,
+    nothing is bare light.
     """
     margin = max(1, round(BORDER_MARGIN * max(lum.shape)))
     inner = lum[margin:-margin, margin:-margin]
     if inner.size == 0:
         return np.zeros(lum.shape, dtype=bool)
-    return np.asarray(lum < float(np.percentile(inner, 0.5)) - BARE_GAP)
+    clear = np.asarray(lum < float(np.percentile(inner, 0.5)) - BARE_GAP)
+    if clear.any() and _runs_all_around(clear, margin):
+        return np.zeros(lum.shape, dtype=bool)
+    return clear
+
+
+def _runs_all_around(clear: BoolMask, margin: int) -> bool:
+    """True if `clear` covers RIM_COVERAGE of each image side within `margin`."""
+    sides = (
+        clear[:margin].any(axis=0),
+        clear[-margin:].any(axis=0),
+        clear[:, :margin].any(axis=1),
+        clear[:, -margin:].any(axis=1),
+    )
+    return all(float(side.mean()) >= RIM_COVERAGE for side in sides)
 
 
 def _bare_patches(lum: FloatImage) -> bool:
@@ -885,26 +943,42 @@ def _runs(mask: BoolMask) -> list[Span]:
     return list(zip(edges[::2].tolist(), edges[1::2].tolist(), strict=True))
 
 
-def _trim_edges(loose_fraction: npt.NDArray[np.floating]) -> tuple[Span, bool]:
-    """Cut base-like bands (rebate, gap rim, holder fringe) touching both ends."""
+def _trim_edges(
+    loose_fraction: npt.NDArray[np.floating], rim: int = 0
+) -> tuple[Span, bool]:
+    """Cut base-like bands (rebate, gap rim, holder fringe) touching both ends.
+
+    A band need not begin at the very end: up to `rim` lines before it may
+    be the soft film edge (see _locate), which is not base-like itself. They
+    are cut with the band they belong to; without a band behind them
+    nothing is cut.
+    """
     n = len(loose_fraction)
-    lo, hi = 0, n
-    while lo < n and loose_fraction[lo] > EDGE_BAND_FRACTION:
+    base = np.asarray(loose_fraction > EDGE_BAND_FRACTION)
+    lo, hi = _band_start(base, rim), n - _band_start(base[::-1], rim)
+    while lo < n and base[lo]:
         lo += 1
-    while hi > lo and loose_fraction[hi - 1] > EDGE_BAND_FRACTION:
+    while hi > lo and base[hi - 1]:
         hi -= 1
     if hi - lo < 0.1 * n:
         return (0, n), False
     return (lo, hi), lo > 0 or hi < n
 
 
+def _band_start(base: BoolMask, rim: int) -> int:
+    """Index of the first base-like line among the first `rim` + 1, else 0."""
+    hits = np.flatnonzero(base[: rim + 1])
+    return int(hits[0]) if hits.size else 0
+
+
 def _long_axis(
     strict_fraction: npt.NDArray[np.floating],
     loose_fraction: npt.NDArray[np.floating],
     min_run: int,
+    rim: int = 0,
 ) -> tuple[Span, bool]:
     """Trim the ends, then split at inter-frame gaps; keep the widest segment."""
-    (lo, hi), trimmed = _trim_edges(loose_fraction)
+    (lo, hi), trimmed = _trim_edges(loose_fraction, rim)
     gaps = [
         (a, b)
         for a, b in _runs(strict_fraction[lo:hi] > GAP_FRACTION)

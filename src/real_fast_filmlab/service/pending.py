@@ -29,15 +29,48 @@ def _marker(source: Path) -> Path:
     return pending_dir() / f"{digest[:24]}.json"
 
 
-def mark(source: Path, outputs: Iterable[Path]) -> None:
-    """Record that `outputs` are being written for `source`."""
+def _identity(source: Path) -> tuple[int, int] | None:
+    """Size and modification time: tells a file from another of its name."""
+    try:
+        stat = source.stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def mark(source: Path, outputs: Iterable[Path] = ()) -> None:
+    """Record that `source` is in work; `outputs` are those written so far.
+
+    The marker keeps the size and modification time of `source`: a later
+    file of the same name is another picture, whose outputs are not ours.
+    """
+    identity = _identity(source)
+    data: dict[str, object] = {
+        "source": str(source),
+        "outputs": [str(p) for p in outputs],
+    }
+    if identity is not None:
+        data["size"], data["mtime_ns"] = identity
+    _write(source, data)
+
+
+def add(source: Path, output: Path) -> None:
+    """Record that `output` was written for the marked `source`."""
+    marker = _marker(source)
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        data["outputs"] = [*data["outputs"], str(output)]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.debug("Cannot read the in-work marker for %s: %s", source.name, exc)
+        return
+    _write(source, data)
+
+
+def _write(source: Path, data: dict[str, object]) -> None:
     marker = _marker(source)
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(
-            json.dumps({"source": str(source), "outputs": [str(p) for p in outputs]}),
-            encoding="utf-8",
-        )
+        marker.write_text(json.dumps(data), encoding="utf-8")
     except OSError as exc:  # only a safety net: the frame is developed anyway
         log.debug("Cannot write the in-work marker for %s: %s", source.name, exc)
 
@@ -55,7 +88,9 @@ def recover(negative: Path, photos: Path) -> list[Path]:
 
     Only markers of RAWs directly in `negative` are handled, and only outputs
     directly in `photos` are ever deleted. A marker whose RAW is gone (it was
-    archived before the marker could be removed) is just forgotten.
+    archived before the marker could be removed) is just forgotten, and so
+    is one whose RAW is no longer the file it was written for (another size
+    or modification time): the outputs then belong to another picture.
     """
     removed: list[Path] = []
     try:
@@ -67,14 +102,15 @@ def recover(negative: Path, photos: Path) -> list[Path]:
             data = json.loads(marker.read_text(encoding="utf-8"))
             source = Path(data["source"])
             outputs = [Path(p) for p in data["outputs"]]
-        except (OSError, ValueError, KeyError, TypeError):
+            identity = (data.get("size"), data.get("mtime_ns"))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             log.debug("Unreadable in-work marker %s removed", marker.name)
             marker.unlink(missing_ok=True)
             continue
         if source.parent != negative:
             continue  # another Negative folder: its own batch handles it
         try:
-            if source.is_file():
+            if source.is_file() and _identity(source) == identity:
                 for output in outputs:
                     if output.parent == photos and output.is_file():
                         output.unlink()
